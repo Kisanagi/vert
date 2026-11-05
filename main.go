@@ -46,6 +46,8 @@ func isDir(path string) bool {
 }
 
 func main() {
+	initConsole()
+
 	args := os.Args[1:]
 	if len(args) == 0 || (len(args) == 1 && isDir(args[0])) {
 		if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
