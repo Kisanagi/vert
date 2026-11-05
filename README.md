@@ -26,6 +26,23 @@ Kalau sudah punya Go, alternatifnya satu perintah juga:
 go install github.com/Kisanagi/vert@latest
 ```
 
+## Uninstall
+
+Satu perintah juga:
+
+```powershell
+irm https://github.com/Kisanagi/vert/releases/latest/download/uninstall.ps1 | iex
+```
+
+Skrip menghapus `vert.exe`/`mdconv.exe` dari `%USERPROFILE%\bin`, membereskan PATH,
+dan menghapus folder itu bila sudah kosong. Buka terminal baru setelahnya.
+
+> Tutup dulu aplikasi `vert` bila sedang berjalan — Windows mengunci file yang
+> sedang dieksekusi.
+
+Kalau LibreOffice dipasang khusus untuk tool ini, hapus juga lewat
+**Settings → Apps**, atau `winget uninstall TheDocumentFoundation.LibreOffice`.
+
 ## Pakai
 
 ```

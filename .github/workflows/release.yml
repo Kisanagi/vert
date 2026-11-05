@@ -29,4 +29,5 @@ jobs:
           files: |
             vert.exe
             install.ps1
+            uninstall.ps1
           generate_release_notes: true
