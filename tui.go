@@ -4,9 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
-	"github.com/charmbracelet/bubbles/filepicker"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -46,10 +47,12 @@ func label(f Format) string {
 
 var (
 	titleStyle  = lipgloss.NewStyle().Bold(true)
+	crumbStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
 	dimStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	okStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	cursorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	dirStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("33"))
 )
 
 type convertDoneMsg struct {
@@ -62,13 +65,30 @@ type searchDoneMsg struct {
 	results []SearchResult
 }
 
+// fsEntry adalah satu baris pada daftar berkas.
+type fsEntry struct {
+	name  string
+	path  string
+	isDir bool
+	size  int64
+	mod   time.Time
+}
+
 type model struct {
-	stage   stage
-	picker  filepicker.Model
-	targets []Format
+	stage stage
+
+	dir     string
+	entries []fsEntry
 	cursor  int
+	status  string
+	width   int
+	height  int
+
 	file    string
 	from    Format
+	targets []Format
+	choice  int
+
 	spin    spinner.Model
 	result  string
 	failure error
@@ -77,6 +97,56 @@ type model struct {
 	searchResults []SearchResult
 	searchCursor  int
 	searchGen     int
+}
+
+// ---------- berkas ----------
+
+// readEntries membaca satu folder: folder tampil lebih dulu, lalu berkas, keduanya terurut.
+func readEntries(dir string) ([]fsEntry, error) {
+	items, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	entries := make([]fsEntry, 0, len(items))
+	for _, item := range items {
+		name := item.Name()
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		info, err := item.Info()
+		if err != nil {
+			continue
+		}
+		entries = append(entries, fsEntry{
+			name:  name,
+			path:  filepath.Join(dir, name),
+			isDir: item.IsDir(),
+			size:  info.Size(),
+			mod:   info.ModTime(),
+		})
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].isDir != entries[j].isDir {
+			return entries[i].isDir
+		}
+		return strings.ToLower(entries[i].name) < strings.ToLower(entries[j].name)
+	})
+	return entries, nil
+}
+
+// breadcrumb menampilkan path sebagai jejak, mis. "D:\ > Dokumen > arsip".
+func breadcrumb(dir string) string {
+	volume := filepath.VolumeName(dir)
+	rest := strings.TrimPrefix(dir, volume)
+	parts := strings.FieldsFunc(rest, func(r rune) bool { return r == '\\' || r == '/' })
+
+	out := volume + string(filepath.Separator)
+	for _, part := range parts {
+		out += " › " + part
+	}
+	return out
 }
 
 // startDirectory menentukan folder awal TUI: argumen eksplisit, atau folder home user.
@@ -119,21 +189,98 @@ func nextRoot(current string) string {
 }
 
 func newModel(dir string) model {
-	fp := filepicker.New()
-	fp.AllowedTypes = []string{
-		".pdf", ".docx", ".odt", ".rtf", ".txt", ".html", ".htm",
-		".md", ".markdown", ".xlsx", ".ods", ".csv", ".pptx", ".odp",
+	start := startDirectory(dir)
+	m := model{stage: stageFile, dir: start, width: 80, height: 24}
+	m.spin = spinner.New()
+	m.spin.Spinner = spinner.Dot
+
+	entries, err := readEntries(start)
+	if err != nil {
+		m.status = "tidak bisa membuka folder"
+		return m
 	}
-	fp.CurrentDirectory = startDirectory(dir)
-	fp.ShowHidden = false
-
-	sp := spinner.New()
-	sp.Spinner = spinner.Dot
-
-	return model{stage: stageFile, picker: fp, spin: sp}
+	m.entries = entries
+	return m
 }
 
-func (m model) Init() tea.Cmd { return m.picker.Init() }
+func (m model) Init() tea.Cmd { return nil }
+
+// setDir berpindah folder dan memuat isinya.
+func (m *model) setDir(dir string) {
+	entries, err := readEntries(dir)
+	if err != nil {
+		m.status = "tidak bisa membuka: " + dir
+		return
+	}
+	m.dir = dir
+	m.entries = entries
+	m.cursor = 0
+	m.status = ""
+}
+
+// open menjalankan aksi Enter: masuk folder, atau pilih berkas untuk dikonversi.
+func (m *model) open() {
+	if len(m.entries) == 0 {
+		return
+	}
+	entry := m.entries[m.cursor]
+	if entry.isDir {
+		m.setDir(entry.path)
+		return
+	}
+	from, ok := DetectFormat(entry.name)
+	if !ok {
+		m.status = entry.name + " tidak bisa dikonversi"
+		return
+	}
+	m.file, m.from = entry.path, from
+	m.targets = AvailableTargets(from)
+	m.choice = 0
+	m.stage = stageFormat
+}
+
+func (m *model) goParent() {
+	if parent := filepath.Dir(m.dir); parent != m.dir {
+		m.setDir(parent)
+	}
+}
+
+// pageSize menentukan berapa baris yang muat di layar.
+func (m *model) pageSize() int {
+	visible := m.height - 8
+	if visible < 5 {
+		visible = 5
+	}
+	return visible
+}
+
+func (m *model) move(delta int) {
+	if len(m.entries) == 0 {
+		return
+	}
+	m.cursor += delta
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+	if m.cursor > len(m.entries)-1 {
+		m.cursor = len(m.entries) - 1
+	}
+}
+
+// windowStart menghitung baris pertama yang ditampilkan agar kursor tetap terlihat.
+func windowStart(cursor, total, visible int) int {
+	if total <= visible {
+		return 0
+	}
+	start := cursor - visible/2
+	if start < 0 {
+		start = 0
+	}
+	if start > total-visible {
+		start = total - visible
+	}
+	return start
+}
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "ctrl+c" {
@@ -153,39 +300,51 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if size, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width, m.height = size.Width, size.Height
+		return m, nil
+	}
 
 	switch m.stage {
 	case stageFile:
-		if key, ok := msg.(tea.KeyMsg); ok {
-			switch key.String() {
-			case "q":
-				return m, tea.Quit
-			case "/":
-				m.stage = stageSearch
-				m.searchQuery = ""
-				m.searchResults = nil
-				m.searchCursor = 0
-				m.searchGen++
-				return m, m.searchCmd()
-			case "~":
-				m.picker.CurrentDirectory = startDirectory("")
-				return m, m.picker.Init()
-			case "tab":
-				m.picker.CurrentDirectory = nextRoot(m.picker.CurrentDirectory)
-				return m, m.picker.Init()
-			}
+		key, ok := msg.(tea.KeyMsg)
+		if !ok {
+			return m, nil
 		}
-		var cmd tea.Cmd
-		m.picker, cmd = m.picker.Update(msg)
-		if selected, path := m.picker.DidSelectFile(msg); selected {
-			if from, ok := DetectFormat(path); ok {
-				m.file, m.from = path, from
-				m.targets = AvailableTargets(from)
-				m.cursor = 0
-				m.stage = stageFormat
+		switch key.String() {
+		case "q":
+			return m, tea.Quit
+		case "up", "k":
+			m.move(-1)
+		case "down", "j":
+			m.move(1)
+		case "pgup":
+			m.move(-m.pageSize())
+		case "pgdown":
+			m.move(m.pageSize())
+		case "home":
+			m.cursor = 0
+		case "end":
+			if len(m.entries) > 0 {
+				m.cursor = len(m.entries) - 1
 			}
+		case "enter", "right", "l":
+			m.open()
+		case "backspace", "left", "h":
+			m.goParent()
+		case "/":
+			m.stage = stageSearch
+			m.searchQuery = ""
+			m.searchResults = nil
+			m.searchCursor = 0
+			m.searchGen++
+			return m, m.searchCmd()
+		case "~":
+			m.setDir(startDirectory(""))
+		case "tab":
+			m.setDir(nextRoot(m.dir))
 		}
-		return m, cmd
+		return m, nil
 
 	case stageSearch:
 		key, ok := msg.(tea.KeyMsg)
@@ -195,7 +354,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch key.String() {
 		case "esc":
 			m.stage = stageFile
-			return m, m.picker.Init()
 		case "q":
 			return m, tea.Quit
 		case "up", "ctrl+p":
@@ -211,12 +369,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			path := m.searchResults[m.searchCursor].Path
-			if from, ok := DetectFormat(path); ok {
-				m.file, m.from = path, from
-				m.targets = AvailableTargets(from)
-				m.cursor = 0
-				m.stage = stageFormat
+			from, ok := DetectFormat(path)
+			if !ok {
+				return m, nil
 			}
+			m.file, m.from = path, from
+			m.targets = AvailableTargets(from)
+			m.choice = 0
+			m.stage = stageFormat
 		case "backspace":
 			if len(m.searchQuery) > 0 {
 				m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
@@ -238,22 +398,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		switch key.String() {
-		case "q", "esc":
+		case "q":
 			return m, tea.Quit
+		case "esc":
+			m.stage = stageFile
 		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
+			if m.choice > 0 {
+				m.choice--
 			}
 		case "down", "j":
-			if m.cursor < len(m.targets)-1 {
-				m.cursor++
+			if m.choice < len(m.targets)-1 {
+				m.choice++
 			}
 		case "enter":
 			if len(m.targets) == 0 {
 				return m, nil
 			}
 			m.stage = stageBusy
-			return m, tea.Batch(m.spin.Tick, m.convertCmd(m.targets[m.cursor]))
+			return m, tea.Batch(m.spin.Tick, m.convertCmd(m.targets[m.choice]))
 		}
 		return m, nil
 
@@ -276,7 +438,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // searchCmd menjalankan penelusuran di folder aktif; hasil dikirim sebagai pesan.
 func (m model) searchCmd() tea.Cmd {
-	root, query, gen := m.picker.CurrentDirectory, m.searchQuery, m.searchGen
+	root, query, gen := m.dir, m.searchQuery, m.searchGen
 	return func() tea.Msg {
 		return searchDoneMsg{gen: gen, results: FindFiles(root, query, maxSearchResults)}
 	}
@@ -301,64 +463,141 @@ func (m model) convertCmd(to Format) tea.Cmd {
 	}
 }
 
+// ---------- tampilan ----------
+
+// displayWidth menghitung lebar kolom; emoji dihitung dua sel agar kolom sejajar.
+func displayWidth(s string) int {
+	width := 0
+	for _, r := range s {
+		if (r >= 0x1F300 && r <= 0x1FAFF) || (r >= 0x2600 && r <= 0x27BF) {
+			width += 2
+		} else {
+			width++
+		}
+	}
+	return width
+}
+
+func padRight(s string, width int) string {
+	if gap := width - displayWidth(s); gap > 0 {
+		return s + strings.Repeat(" ", gap)
+	}
+	return s
+}
+
+func truncate(s string, width int) string {
+	if displayWidth(s) <= width {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) > width-1 {
+		runes = runes[:width-1]
+	}
+	return string(runes) + "…"
+}
+
+func entryRow(entry fsEntry, selected bool) string {
+	marker := "  "
+	if selected {
+		marker = "> "
+	}
+
+	icon, name, size := "📄", entry.name, humanSize(entry.size)
+	if entry.isDir {
+		icon, name, size = "📁", entry.name+"/", "<DIR>"
+	}
+
+	row := marker + icon + " " + padRight(truncate(name, 34), 34) +
+		fmt.Sprintf("%10s  %s", size, entry.mod.Format("02/01 15:04"))
+
+	if selected {
+		return cursorStyle.Render(row)
+	}
+	if entry.isDir {
+		return dirStyle.Render(row)
+	}
+	return row
+}
+
+func (m model) browserView() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("vert — pilih berkas") + "\n")
+	b.WriteString(crumbStyle.Render(breadcrumb(m.dir)) + "\n\n")
+
+	if len(m.entries) == 0 {
+		b.WriteString(dimStyle.Render("(folder kosong)") + "\n")
+	} else {
+		visible := m.pageSize()
+		start := windowStart(m.cursor, len(m.entries), visible)
+		for i := start; i < len(m.entries) && i < start+visible; i++ {
+			b.WriteString(entryRow(m.entries[i], i == m.cursor) + "\n")
+		}
+		if len(m.entries) > visible {
+			b.WriteString(dimStyle.Render(fmt.Sprintf("  … %d dari %d", m.cursor+1, len(m.entries))) + "\n")
+		}
+	}
+
+	if m.status != "" {
+		b.WriteString("\n" + errStyle.Render(m.status))
+	}
+	b.WriteString("\n" + dimStyle.Render("↑/↓ pilih · Enter buka · / cari · ~ home · Tab drive · Backspace naik · q keluar"))
+	return b.String()
+}
+
+func (m model) searchView() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("Cari berkas") + "\n")
+	b.WriteString(crumbStyle.Render(breadcrumb(m.dir)) + "\n\n")
+	b.WriteString("Cari: " + m.searchQuery + "▌\n\n")
+
+	if len(m.searchResults) == 0 {
+		b.WriteString(dimStyle.Render("tidak ada berkas yang cocok") + "\n")
+	} else {
+		start := windowStart(m.searchCursor, len(m.searchResults), 10)
+		for i := start; i < len(m.searchResults) && i < start+10; i++ {
+			item := m.searchResults[i]
+			line := filepath.Base(item.Path) + "  " + humanSize(item.Size)
+			if i == m.searchCursor {
+				b.WriteString(cursorStyle.Render("> "+line) + "\n")
+				b.WriteString(dimStyle.Render("  "+item.Path) + "\n")
+			} else {
+				b.WriteString("  " + line + "\n")
+			}
+		}
+	}
+
+	b.WriteString("\n" + dimStyle.Render(fmt.Sprintf("%d hasil · ↑/↓ pilih · Enter pakai · Esc kembali", len(m.searchResults))))
+	return b.String()
+}
+
+func (m model) formatView() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("Konversi "+filepath.Base(m.file)) + "\n\n")
+	if len(m.targets) == 0 {
+		b.WriteString(errStyle.Render("Tidak ada format tujuan yang didukung untuk berkas ini.") + "\n")
+	} else {
+		for i, target := range m.targets {
+			if i == m.choice {
+				b.WriteString(cursorStyle.Render("> "+label(target)) + "\n")
+			} else {
+				b.WriteString("  " + label(target) + "\n")
+			}
+		}
+	}
+	b.WriteString("\n" + dimStyle.Render("↑/↓ pilih · Enter konversi · Esc kembali · q keluar"))
+	return b.String()
+}
+
 func (m model) View() string {
 	switch m.stage {
 	case stageFile:
-		return titleStyle.Render("MD Converter — pilih berkas") + "\n" +
-			dimStyle.Render("untuk: "+m.picker.CurrentDirectory) + "\n\n" +
-			m.picker.View() + "\n" +
-			dimStyle.Render("↑/↓ pilih · Enter buka/pilih · / cari · ~ home · Tab ganti drive · q keluar")
-
+		return m.browserView()
 	case stageSearch:
-		var b strings.Builder
-		b.WriteString(titleStyle.Render("Cari berkas") + "\n")
-		b.WriteString(dimStyle.Render("di: "+m.picker.CurrentDirectory) + "\n\n")
-		b.WriteString("Cari: " + m.searchQuery + "▌\n\n")
-
-		if len(m.searchResults) == 0 {
-			b.WriteString(dimStyle.Render("tidak ada berkas yang cocok") + "\n")
-		} else {
-			from := 0
-			if m.searchCursor >= 10 {
-				from = m.searchCursor - 9
-			}
-			for i := from; i < len(m.searchResults) && i < from+10; i++ {
-				item := m.searchResults[i]
-				line := filepath.Base(item.Path) + "  " + humanSize(item.Size)
-				detail := item.Path
-				if i == m.searchCursor {
-					b.WriteString(cursorStyle.Render("> "+line) + "\n")
-					b.WriteString(dimStyle.Render("  "+detail) + "\n")
-				} else {
-					b.WriteString("  " + line + "\n")
-				}
-			}
-		}
-
-		b.WriteString("\n" + dimStyle.Render(fmt.Sprintf("%d hasil", len(m.searchResults))) +
-			dimStyle.Render(" · ↑/↓ pilih · Enter pakai · Esc kembali · ketik untuk cari"))
-		return b.String()
-
+		return m.searchView()
 	case stageFormat:
-		var b strings.Builder
-		b.WriteString(titleStyle.Render("Konversi "+filepath.Base(m.file)) + "\n\n")
-		if len(m.targets) == 0 {
-			b.WriteString(errStyle.Render("Tidak ada format tujuan yang didukung untuk berkas ini.") + "\n")
-		} else {
-			for i, target := range m.targets {
-				if i == m.cursor {
-					b.WriteString(cursorStyle.Render("> "+label(target)) + "\n")
-				} else {
-					b.WriteString("  " + label(target) + "\n")
-				}
-			}
-		}
-		b.WriteString("\n" + dimStyle.Render("↑/↓ pilih · Enter konversi · q keluar"))
-		return b.String()
-
+		return m.formatView()
 	case stageBusy:
 		return m.spin.View() + " Mengonversi…"
-
 	case stageDone:
 		if m.failure != nil {
 			return errStyle.Render("Gagal: "+m.failure.Error()) + "\n\n" + dimStyle.Render("Enter/q keluar")

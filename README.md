@@ -57,10 +57,14 @@ vert -find laporan D:\Dokumen   # cari berkas (rekursif), cetak hasilnya
 
 ### Navigasi TUI
 
+Daftar berkas tampil dalam satu panel: baris path (breadcrumb) di atas, lalu kolom
+nama, ukuran, dan waktu ubah.
+
 | Tombol | Fungsi |
 | --- | --- |
 | `↑` `↓` | pindah pilihan |
 | `Enter` | buka folder / pilih berkas |
+| `Backspace` | naik satu folder |
 | `/` | cari berkas (rekursif dari folder aktif) |
 | `~` | lompat ke folder home |
 | `Tab` | ganti drive (mis. `C:` → `D:`) |
