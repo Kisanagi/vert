@@ -76,7 +76,7 @@ func ConvertWithLibreOffice(from, to Format, data []byte) ([]byte, error) {
 		return nil, errors.New("LibreOffice tidak ditemukan")
 	}
 
-	dir, err := os.MkdirTemp("", "mdconv-")
+	dir, err := os.MkdirTemp("", "vert-")
 	if err != nil {
 		return nil, err
 	}

@@ -11,7 +11,7 @@ import (
 // valueFlags adalah flag yang nilainya ditulis terpisah (mis. `--to pdf`).
 var valueFlags = map[string]bool{"to": true, "out": true}
 
-// normalizeArgs memindahkan flag ke depan agar `mdconv file.docx --to pdf` tetap terbaca.
+// normalizeArgs memindahkan flag ke depan agar `vert file.docx --to pdf` tetap terbaca.
 func normalizeArgs(args []string) []string {
 	var flags, positional []string
 	for i := 0; i < len(args); i++ {
@@ -52,7 +52,7 @@ func main() {
 	if len(args) == 0 || (len(args) == 1 && isDir(args[0])) {
 		if !isTerminal(os.Stdin) || !isTerminal(os.Stdout) {
 			fmt.Fprintln(os.Stderr, "TUI memerlukan terminal interaktif. Mode satu-perintah:")
-			fmt.Fprintln(os.Stderr, "  mdconv <berkas> --to <format>")
+			fmt.Fprintln(os.Stderr, "  vert <berkas> --to <format>")
 			os.Exit(2)
 		}
 		dir := ""
@@ -66,18 +66,18 @@ func main() {
 		return
 	}
 
-	fs := flag.NewFlagSet("mdconv", flag.ContinueOnError)
+	fs := flag.NewFlagSet("vert", flag.ContinueOnError)
 	to := fs.String("to", "", "format tujuan, mis. pdf")
 	out := fs.String("out", "", "path hasil (opsional; default di sebelah berkas sumber)")
 	listTargets := fs.Bool("formats", false, "tampilkan format tujuan yang didukung")
 	find := fs.String("find", "", "cari berkas (nama mengandung teks) di dalam direktori, lalu cetak hasilnya")
 	preview := fs.Bool("preview", false, "cetak satu tampilan TUI lalu keluar (untuk memeriksa tata letak)")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Pemakaian: mdconv <berkas...> --to <format> [--out <path>]")
-		fmt.Fprintln(os.Stderr, "           mdconv                    # buka TUI")
-		fmt.Fprintln(os.Stderr, "           mdconv <folder>           # buka TUI di folder itu")
-		fmt.Fprintln(os.Stderr, "           mdconv <berkas> -formats  # lihat target yang didukung")
-		fmt.Fprintln(os.Stderr, "           mdconv -find <teks> [dir] # cari berkas yang bisa dikonversi")
+		fmt.Fprintln(os.Stderr, "Pemakaian: vert <berkas...> --to <format> [--out <path>]")
+		fmt.Fprintln(os.Stderr, "           vert                      # buka TUI")
+		fmt.Fprintln(os.Stderr, "           vert <folder>             # buka TUI di folder itu")
+		fmt.Fprintln(os.Stderr, "           vert <berkas> -formats    # lihat target yang didukung")
+		fmt.Fprintln(os.Stderr, "           vert -find <teks> [dir]   # cari berkas yang bisa dikonversi")
 	}
 
 	if err := fs.Parse(normalizeArgs(args)); err != nil {

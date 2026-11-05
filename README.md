@@ -34,7 +34,7 @@ Satu perintah juga:
 irm https://github.com/Kisanagi/vert/releases/latest/download/uninstall.ps1 | iex
 ```
 
-Skrip menghapus `vert.exe`/`mdconv.exe` dari `%USERPROFILE%\bin`, membereskan PATH,
+Skrip menghapus `vert.exe` dari `%USERPROFILE%\bin`, membereskan PATH,
 dan menghapus folder itu bila sudah kosong. Buka terminal baru setelahnya.
 
 > Tutup dulu aplikasi `vert` bila sedang berjalan — Windows mengunci file yang

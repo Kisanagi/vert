@@ -8,7 +8,7 @@
 $ErrorActionPreference = 'Stop'
 
 $Target = Join-Path $env:USERPROFILE 'bin'
-$Names = @('vert.exe', 'mdconv.exe')
+$Names = @('vert.exe')
 
 foreach ($exe in $Names) {
     $path = Join-Path $Target $exe
