@@ -190,7 +190,7 @@ func breadcrumb(dir string) string {
 
 	out := volume + string(filepath.Separator)
 	for _, part := range parts {
-		out += " › " + part
+		out += " > " + part
 	}
 	return out
 }
@@ -658,17 +658,10 @@ func (m model) convertCmd(to Format) tea.Cmd {
 
 // ---------- tampilan ----------
 
-// displayWidth menghitung lebar kolom; emoji dihitung dua sel agar kolom sejajar.
+// displayWidth menghitung lebar kolom. Semua penanda kini ASCII, jadi cukup
+// jumlah rune.
 func displayWidth(s string) int {
-	width := 0
-	for _, r := range s {
-		if (r >= 0x1F300 && r <= 0x1FAFF) || (r >= 0x2600 && r <= 0x27BF) {
-			width += 2
-		} else {
-			width++
-		}
-	}
-	return width
+	return len([]rune(s))
 }
 
 func padRight(s string, width int) string {
@@ -679,14 +672,25 @@ func padRight(s string, width int) string {
 }
 
 func truncate(s string, width int) string {
-	if displayWidth(s) <= width {
+	runes := []rune(s)
+	if len(runes) <= width {
 		return s
 	}
-	runes := []rune(s)
-	if len(runes) > width-1 {
-		runes = runes[:width-1]
+	if width <= 3 {
+		return string(runes[:width])
 	}
-	return string(runes) + "…"
+	return string(runes[:width-3]) + "..."
+}
+
+func truncateLeft(s string, width int) string {
+	runes := []rune(s)
+	if len(runes) <= width {
+		return s
+	}
+	if width <= 3 {
+		return string(runes[len(runes)-width:])
+	}
+	return "..." + string(runes[len(runes)-(width-3):])
 }
 
 func (m model) treeLines(rows int) []string {
@@ -697,7 +701,7 @@ func (m model) treeLines(rows int) []string {
 
 	title := crumbStyle.Render("Folder")
 	if m.focus == focusTree {
-		title = activePane.Render("▸ Folder")
+		title = activePane.Render("> Folder")
 	}
 	lines := []string{title}
 
@@ -708,9 +712,9 @@ func (m model) treeLines(rows int) []string {
 	start := windowStart(m.treeCur, len(m.tree), visible)
 	for i := start; i < len(m.tree) && i < start+visible; i++ {
 		node := m.tree[i]
-		marker := "▸ "
+		marker := "+ "
 		if m.expanded[node.path] {
-			marker = "▾ "
+			marker = "- "
 		}
 		line := strings.Repeat("  ", node.depth) + marker + truncate(node.name, 22)
 
@@ -733,6 +737,9 @@ func (m model) fileLines(rows int) []string {
 	}
 
 	title := breadcrumb(m.dir)
+	if available := m.width - m.leftWidth() - 4; available > 10 {
+		title = truncateLeft(title, available)
+	}
 	if m.focus == focusFiles {
 		title = activePane.Render(title)
 	} else {
@@ -747,9 +754,9 @@ func (m model) fileLines(rows int) []string {
 	start := windowStart(m.fileCur, len(m.entries), visible)
 	for i := start; i < len(m.entries) && i < start+visible; i++ {
 		entry := m.entries[i]
-		icon, name, size := "📄", entry.name, humanSize(entry.size)
+		kind, name, size := "   ", entry.name, humanSize(entry.size)
 		if entry.isDir {
-			icon, name, size = "📁", entry.name+"/", "<DIR>"
+			kind, name, size = "[D]", entry.name+"/", "<DIR>"
 		}
 
 		selected := i == m.fileCur && m.focus == focusFiles
@@ -757,7 +764,7 @@ func (m model) fileLines(rows int) []string {
 		if selected {
 			marker = "> "
 		}
-		row := marker + icon + " " + padRight(truncate(name, 26), 26) +
+		row := marker + kind + " " + padRight(truncate(name, 26), 26) +
 			fmt.Sprintf("%9s  %s", size, entry.mod.Format("02/01 15:04"))
 
 		switch {
@@ -780,7 +787,7 @@ func (m model) browserView() string {
 	leftStyle := lipgloss.NewStyle().Width(m.leftWidth())
 
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("vert — pilih berkas") + "\n\n")
+	b.WriteString(titleStyle.Render("vert - pilih berkas") + "\n\n")
 	for i := 0; i < rows; i++ {
 		var leftLine, rightLine string
 		if i < len(left) {
@@ -803,7 +810,7 @@ func (m model) searchView() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("Cari berkas") + "\n")
 	b.WriteString(crumbStyle.Render(breadcrumb(m.dir)) + "\n\n")
-	b.WriteString("Cari: " + m.searchQuery + "▌\n\n")
+	b.WriteString("Cari: " + m.searchQuery + "_\n\n")
 
 	if len(m.searchResults) == 0 {
 		b.WriteString(dimStyle.Render("tidak ada berkas yang cocok") + "\n")

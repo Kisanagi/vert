@@ -71,6 +71,7 @@ func main() {
 	out := fs.String("out", "", "path hasil (opsional; default di sebelah berkas sumber)")
 	listTargets := fs.Bool("formats", false, "tampilkan format tujuan yang didukung")
 	find := fs.String("find", "", "cari berkas (nama mengandung teks) di dalam direktori, lalu cetak hasilnya")
+	preview := fs.Bool("preview", false, "cetak satu tampilan TUI lalu keluar (untuk memeriksa tata letak)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Pemakaian: mdconv <berkas...> --to <format> [--out <path>]")
 		fmt.Fprintln(os.Stderr, "           mdconv                    # buka TUI")
@@ -84,6 +85,17 @@ func main() {
 	}
 
 	inputs := fs.Args()
+
+	if *preview {
+		start := ""
+		if len(inputs) > 0 {
+			start = inputs[0]
+		}
+		view := newModel(start)
+		view.width, view.height = 100, 24
+		fmt.Println(view.View())
+		return
+	}
 
 	if *find != "" {
 		root := "."
