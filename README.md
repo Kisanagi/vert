@@ -57,17 +57,18 @@ vert -find laporan D:\Dokumen   # cari berkas (rekursif), cetak hasilnya
 
 ### Navigasi TUI
 
-Satu panel: baris path (breadcrumb) di atas, lalu kolom nama, ukuran, dan waktu ubah.
-Folder ditandai `[D]` dan kolom `<DIR>`.
+Dua panel: **pohon folder** di kiri, **isi folder** di kanan (kolom nama, ukuran,
+waktu ubah).
 
 | Tombol | Fungsi |
 | --- | --- |
+| `Tab` | pindah panel (pohon ↔ isi) |
 | `↑` `↓` | pindah pilihan |
 | `Enter` | buka folder / pilih berkas |
-| `Backspace` | naik satu folder |
+| `←` / `Backspace` | tutup folder / naik satu level |
 | `/` | cari berkas (rekursif dari folder aktif) |
 | `~` | lompat ke folder home |
-| `Tab` | ganti drive (mis. `C:` → `D:`) |
+| `Ctrl+D` | ganti drive (mis. `C:` → `D:`) |
 | `q` / `Ctrl+C` | keluar |
 
 Di mode cari: ketik untuk menyaring, `↑/↓` pilih, `Enter` pakai, `Esc` kembali.

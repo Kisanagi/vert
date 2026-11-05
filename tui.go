@@ -23,6 +23,13 @@ const (
 	stageDone
 )
 
+type focus int
+
+const (
+	focusTree focus = iota
+	focusFiles
+)
+
 var formatLabels = map[Format]string{
 	FormatPDF:  "PDF",
 	FormatDOCX: "Word (DOCX)",
@@ -53,6 +60,8 @@ var (
 	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	cursorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 	dirStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("33"))
+	frameStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
+	activePane  = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true)
 )
 
 type convertDoneMsg struct {
@@ -74,15 +83,29 @@ type fsEntry struct {
 	mod   time.Time
 }
 
+// treeNode adalah satu baris pada pohon folder (sudah diratakan ke daftar).
+type treeNode struct {
+	name  string
+	path  string
+	depth int
+}
+
 type model struct {
 	stage stage
 
+	root     string
+	tree     []treeNode
+	treeCur  int
+	expanded map[string]bool
+
 	dir     string
 	entries []fsEntry
-	cursor  int
-	status  string
-	width   int
-	height  int
+	fileCur int
+
+	focus  focus
+	status string
+	width  int
+	height int
 
 	file    string
 	from    Format
@@ -101,7 +124,7 @@ type model struct {
 
 // ---------- berkas ----------
 
-// readEntries membaca satu folder: folder tampil lebih dulu, lalu berkas, keduanya terurut.
+// readEntries membaca satu folder: folder lebih dulu, lalu berkas, keduanya terurut.
 func readEntries(dir string) ([]fsEntry, error) {
 	items, err := os.ReadDir(dir)
 	if err != nil {
@@ -134,6 +157,29 @@ func readEntries(dir string) ([]fsEntry, error) {
 		return strings.ToLower(entries[i].name) < strings.ToLower(entries[j].name)
 	})
 	return entries, nil
+}
+
+// subDirectories mengembalikan hanya subfolder (untuk pohon di panel kiri).
+func subDirectories(dir string) []fsEntry {
+	items, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var dirs []fsEntry
+	for _, item := range items {
+		if !item.IsDir() || strings.HasPrefix(item.Name(), ".") {
+			continue
+		}
+		dirs = append(dirs, fsEntry{
+			name:  item.Name(),
+			path:  filepath.Join(dir, item.Name()),
+			isDir: true,
+		})
+	}
+	sort.Slice(dirs, func(i, j int) bool {
+		return strings.ToLower(dirs[i].name) < strings.ToLower(dirs[j].name)
+	})
+	return dirs
 }
 
 // breadcrumb menampilkan path sebagai jejak, mis. "D:\ > Dokumen > arsip".
@@ -190,20 +236,64 @@ func nextRoot(current string) string {
 
 func newModel(dir string) model {
 	start := startDirectory(dir)
-	m := model{stage: stageFile, dir: start, width: 80, height: 24}
+	m := model{
+		stage:    stageFile,
+		dir:      start,
+		width:    100,
+		height:   28,
+		expanded: map[string]bool{},
+	}
 	m.spin = spinner.New()
 	m.spin.Spinner = spinner.Dot
 
-	entries, err := readEntries(start)
-	if err != nil {
-		m.status = "tidak bisa membuka folder"
-		return m
-	}
-	m.entries = entries
+	m.initTree(start)
+	m.setDir(start)
 	return m
 }
 
 func (m model) Init() tea.Cmd { return nil }
+
+// initTree menyiapkan pohon dari akar drive, dengan semua leluhur folder awal terbuka.
+func (m *model) initTree(start string) {
+	m.root = filepath.VolumeName(start) + string(filepath.Separator)
+
+	for cur := start; ; {
+		m.expanded[cur] = true
+		parent := filepath.Dir(cur)
+		if parent == cur || len(cur) <= len(m.root) {
+			break
+		}
+		cur = parent
+	}
+
+	m.rebuildTree()
+	m.treeCursorTo(start)
+}
+
+// rebuildTree meratakan pohon yang sedang terbuka menjadi daftar baris.
+func (m *model) rebuildTree() {
+	m.tree = m.tree[:0]
+	var walk func(dir string, depth int)
+	walk = func(dir string, depth int) {
+		for _, sub := range subDirectories(dir) {
+			m.tree = append(m.tree, treeNode{name: sub.name, path: sub.path, depth: depth})
+			if m.expanded[sub.path] {
+				walk(sub.path, depth+1)
+			}
+		}
+	}
+	walk(m.root, 0)
+}
+
+// treeCursorTo memindahkan kursor pohon ke path tertentu.
+func (m *model) treeCursorTo(path string) {
+	for i, node := range m.tree {
+		if strings.EqualFold(node.path, path) {
+			m.treeCur = i
+			return
+		}
+	}
+}
 
 // setDir berpindah folder dan memuat isinya.
 func (m *model) setDir(dir string) {
@@ -214,18 +304,58 @@ func (m *model) setDir(dir string) {
 	}
 	m.dir = dir
 	m.entries = entries
-	m.cursor = 0
+	m.fileCur = 0
 	m.status = ""
 }
 
-// open menjalankan aksi Enter: masuk folder, atau pilih berkas untuk dikonversi.
-func (m *model) open() {
+// syncTree memastikan folder aktif terlihat di pohon (terbuka + kursor di sana).
+func (m *model) syncTree(path string) {
+	m.expanded[path] = true
+	m.rebuildTree()
+	m.treeCursorTo(path)
+}
+
+// openTree menangani Enter/panah kanan di panel pohon.
+func (m *model) openTree() {
+	if len(m.tree) == 0 {
+		return
+	}
+	node := m.tree[m.treeCur]
+	m.expanded[node.path] = true
+	m.setDir(node.path)
+	m.rebuildTree()
+	m.treeCursorTo(node.path)
+}
+
+// collapseTree menangani panah kiri di panel pohon: tutup folder, atau naik ke induk.
+func (m *model) collapseTree() {
+	if len(m.tree) == 0 {
+		return
+	}
+	node := m.tree[m.treeCur]
+	if m.expanded[node.path] {
+		delete(m.expanded, node.path)
+		m.rebuildTree()
+		m.treeCursorTo(node.path)
+		return
+	}
+	parent := filepath.Dir(node.path)
+	if parent != node.path {
+		m.setDir(parent)
+		m.rebuildTree()
+		m.treeCursorTo(parent)
+	}
+}
+
+// openFile menangani Enter di panel kanan: masuk folder, atau pilih berkas.
+func (m *model) openFile() {
 	if len(m.entries) == 0 {
 		return
 	}
-	entry := m.entries[m.cursor]
+	entry := m.entries[m.fileCur]
 	if entry.isDir {
 		m.setDir(entry.path)
+		m.syncTree(entry.path)
 		return
 	}
 	from, ok := DetectFormat(entry.name)
@@ -239,31 +369,56 @@ func (m *model) open() {
 	m.stage = stageFormat
 }
 
+// goParent naik satu folder.
 func (m *model) goParent() {
 	if parent := filepath.Dir(m.dir); parent != m.dir {
 		m.setDir(parent)
+		m.syncTree(parent)
 	}
 }
 
-// pageSize menentukan berapa baris yang muat di layar.
-func (m *model) pageSize() int {
-	visible := m.height - 8
-	if visible < 5 {
-		visible = 5
+func (m *model) rows() int {
+	r := m.height - 5
+	if r < 5 {
+		r = 5
 	}
-	return visible
+	return r
 }
 
-func (m *model) move(delta int) {
+func (m model) leftWidth() int {
+	w := m.width * 2 / 5
+	if w < 18 {
+		w = 18
+	}
+	if w > 46 {
+		w = 46
+	}
+	return w
+}
+
+func (m *model) moveTree(delta int) {
+	if len(m.tree) == 0 {
+		return
+	}
+	m.treeCur += delta
+	if m.treeCur < 0 {
+		m.treeCur = 0
+	}
+	if m.treeCur > len(m.tree)-1 {
+		m.treeCur = len(m.tree) - 1
+	}
+}
+
+func (m *model) moveFiles(delta int) {
 	if len(m.entries) == 0 {
 		return
 	}
-	m.cursor += delta
-	if m.cursor < 0 {
-		m.cursor = 0
+	m.fileCur += delta
+	if m.fileCur < 0 {
+		m.fileCur = 0
 	}
-	if m.cursor > len(m.entries)-1 {
-		m.cursor = len(m.entries) - 1
+	if m.fileCur > len(m.entries)-1 {
+		m.fileCur = len(m.entries) - 1
 	}
 }
 
@@ -311,27 +466,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !ok {
 			return m, nil
 		}
+		page := m.rows()
+
 		switch key.String() {
 		case "q":
 			return m, tea.Quit
-		case "up", "k":
-			m.move(-1)
-		case "down", "j":
-			m.move(1)
-		case "pgup":
-			m.move(-m.pageSize())
-		case "pgdown":
-			m.move(m.pageSize())
-		case "home":
-			m.cursor = 0
-		case "end":
-			if len(m.entries) > 0 {
-				m.cursor = len(m.entries) - 1
+		case "tab":
+			if m.focus == focusTree {
+				m.focus = focusFiles
+			} else {
+				m.focus = focusTree
 			}
-		case "enter", "right", "l":
-			m.open()
-		case "backspace", "left", "h":
-			m.goParent()
+		case "ctrl+d":
+			next := nextRoot(m.dir)
+			m.initTree(next)
+			m.setDir(next)
+		case "~":
+			home := startDirectory("")
+			m.initTree(home)
+			m.setDir(home)
 		case "/":
 			m.stage = stageSearch
 			m.searchQuery = ""
@@ -339,10 +492,50 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.searchCursor = 0
 			m.searchGen++
 			return m, m.searchCmd()
-		case "~":
-			m.setDir(startDirectory(""))
-		case "tab":
-			m.setDir(nextRoot(m.dir))
+		default:
+			if m.focus == focusTree {
+				switch key.String() {
+				case "up", "k":
+					m.moveTree(-1)
+				case "down", "j":
+					m.moveTree(1)
+				case "pgup":
+					m.moveTree(-page)
+				case "pgdown":
+					m.moveTree(page)
+				case "home":
+					m.treeCur = 0
+				case "end":
+					if len(m.tree) > 0 {
+						m.treeCur = len(m.tree) - 1
+					}
+				case "enter", "right", "l":
+					m.openTree()
+				case "left", "h", "backspace":
+					m.collapseTree()
+				}
+			} else {
+				switch key.String() {
+				case "up", "k":
+					m.moveFiles(-1)
+				case "down", "j":
+					m.moveFiles(1)
+				case "pgup":
+					m.moveFiles(-page)
+				case "pgdown":
+					m.moveFiles(page)
+				case "home":
+					m.fileCur = 0
+				case "end":
+					if len(m.entries) > 0 {
+						m.fileCur = len(m.entries) - 1
+					}
+				case "enter", "right", "l":
+					m.openFile()
+				case "left", "h", "backspace":
+					m.goParent()
+				}
+			}
 		}
 		return m, nil
 
@@ -465,7 +658,8 @@ func (m model) convertCmd(to Format) tea.Cmd {
 
 // ---------- tampilan ----------
 
-// displayWidth menghitung lebar kolom; emoji dihitung dua sel agar kolom sejajar.
+// displayWidth menghitung lebar kolom. Semua penanda kini ASCII, jadi cukup
+// jumlah rune.
 func displayWidth(s string) int {
 	return len([]rune(s))
 }
@@ -488,51 +682,127 @@ func truncate(s string, width int) string {
 	return string(runes[:width-3]) + "..."
 }
 
-func entryRow(entry fsEntry, selected bool) string {
-	marker := "  "
-	if selected {
-		marker = "> "
+func truncateLeft(s string, width int) string {
+	runes := []rune(s)
+	if len(runes) <= width {
+		return s
+	}
+	if width <= 3 {
+		return string(runes[len(runes)-width:])
+	}
+	return "..." + string(runes[len(runes)-(width-3):])
+}
+
+func (m model) treeLines(rows int) []string {
+	visible := rows - 1
+	if visible < 1 {
+		visible = 1
 	}
 
-	kind, name, size := "   ", entry.name, humanSize(entry.size)
-	if entry.isDir {
-		kind, name, size = "[D]", entry.name+"/", "<DIR>"
+	title := crumbStyle.Render("Folder")
+	if m.focus == focusTree {
+		title = activePane.Render("> Folder")
+	}
+	lines := []string{title}
+
+	if len(m.tree) == 0 {
+		return append(lines, dimStyle.Render("(tidak ada subfolder)"))
 	}
 
-	row := marker + kind + " " + padRight(truncate(name, 34), 34) +
-		fmt.Sprintf("%10s  %s", size, entry.mod.Format("02/01 15:04"))
+	start := windowStart(m.treeCur, len(m.tree), visible)
+	for i := start; i < len(m.tree) && i < start+visible; i++ {
+		node := m.tree[i]
+		marker := "+ "
+		if m.expanded[node.path] {
+			marker = "- "
+		}
+		line := strings.Repeat("  ", node.depth) + marker + truncate(node.name, 22)
 
-	if selected {
-		return cursorStyle.Render(row)
+		switch {
+		case i == m.treeCur && m.focus == focusTree:
+			lines = append(lines, cursorStyle.Render(line))
+		case i == m.treeCur:
+			lines = append(lines, dirStyle.Render(line))
+		default:
+			lines = append(lines, line)
+		}
 	}
-	if entry.isDir {
-		return dirStyle.Render(row)
+	return lines
+}
+
+func (m model) fileLines(rows int) []string {
+	visible := rows - 1
+	if visible < 1 {
+		visible = 1
 	}
-	return row
+
+	title := breadcrumb(m.dir)
+	if available := m.width - m.leftWidth() - 4; available > 10 {
+		title = truncateLeft(title, available)
+	}
+	if m.focus == focusFiles {
+		title = activePane.Render(title)
+	} else {
+		title = crumbStyle.Render(title)
+	}
+	lines := []string{title}
+
+	if len(m.entries) == 0 {
+		return append(lines, dimStyle.Render("(folder kosong)"))
+	}
+
+	start := windowStart(m.fileCur, len(m.entries), visible)
+	for i := start; i < len(m.entries) && i < start+visible; i++ {
+		entry := m.entries[i]
+		kind, name, size := "   ", entry.name, humanSize(entry.size)
+		if entry.isDir {
+			kind, name, size = "[D]", entry.name+"/", "<DIR>"
+		}
+
+		selected := i == m.fileCur && m.focus == focusFiles
+		marker := "  "
+		if selected {
+			marker = "> "
+		}
+		row := marker + kind + " " + padRight(truncate(name, 26), 26) +
+			fmt.Sprintf("%9s  %s", size, entry.mod.Format("02/01 15:04"))
+
+		switch {
+		case selected:
+			lines = append(lines, cursorStyle.Render(row))
+		case entry.isDir:
+			lines = append(lines, dirStyle.Render(row))
+		default:
+			lines = append(lines, row)
+		}
+	}
+	return lines
 }
 
 func (m model) browserView() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("vert - pilih berkas") + "\n")
-	b.WriteString(crumbStyle.Render(breadcrumb(m.dir)) + "\n\n")
+	rows := m.rows()
+	left := m.treeLines(rows)
+	right := m.fileLines(rows)
 
-	if len(m.entries) == 0 {
-		b.WriteString(dimStyle.Render("(folder kosong)") + "\n")
-	} else {
-		visible := m.pageSize()
-		start := windowStart(m.cursor, len(m.entries), visible)
-		for i := start; i < len(m.entries) && i < start+visible; i++ {
-			b.WriteString(entryRow(m.entries[i], i == m.cursor) + "\n")
+	leftStyle := lipgloss.NewStyle().Width(m.leftWidth())
+
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("vert - pilih berkas") + "\n\n")
+	for i := 0; i < rows; i++ {
+		var leftLine, rightLine string
+		if i < len(left) {
+			leftLine = left[i]
 		}
-		if len(m.entries) > visible {
-			b.WriteString(fmt.Sprintf("  ... %d dari %d", m.cursor+1, len(m.entries)) + "\n")
+		if i < len(right) {
+			rightLine = right[i]
 		}
+		b.WriteString(leftStyle.Render(leftLine) + frameStyle.Render(" │ ") + rightLine + "\n")
 	}
 
 	if m.status != "" {
 		b.WriteString("\n" + errStyle.Render(m.status))
 	}
-	b.WriteString("\n" + dimStyle.Render("↑/↓ pilih · Enter buka · / cari · ~ home · Tab drive · Backspace naik · q keluar"))
+	b.WriteString("\n" + dimStyle.Render("Tab pindah panel · ↑/↓ pilih · Enter buka · / cari · ~ home · Ctrl+D drive · q keluar"))
 	return b.String()
 }
 
@@ -589,7 +859,7 @@ func (m model) View() string {
 	case stageFormat:
 		return m.formatView()
 	case stageBusy:
-		return m.spin.View() + " Mengonversi..."
+		return m.spin.View() + " Mengonversi…"
 	case stageDone:
 		if m.failure != nil {
 			return errStyle.Render("Gagal: "+m.failure.Error()) + "\n\n" + dimStyle.Render("Enter/q keluar")
