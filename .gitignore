@@ -1,0 +1,12 @@
+# Biner hasil build
+vert
+vert.exe
+mdconv
+mdconv.exe
+
+# Konfigurasi lokal Command Code
+.commandcode/
+
+*.log
+*.dmp
+.DS_Store
