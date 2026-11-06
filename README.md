@@ -90,16 +90,16 @@ Hasil ditulis di folder yang sama dengan ekstensi baru.
 
 - Dalam satu keluarga bebas bolak-balik — mis. `DOCX ↔ ODT`, `XLSX ↔ CSV`, `PPTX ↔ ODP`.
 - Apa pun dari keluarga di atas → **PDF**.
-- **PDF → DOCX / PPTX / ODP** saja. LibreOffice menyimpan hasil impor PDF di *text
-  frame*, dan ekspor ke TXT/HTML/ODT/RTF membuang isinya — jadi tujuan itu tidak
-  ditawarkan dari PDF.
+- **Dari PDF:** ke DOCX/PPTX/ODP lewat LibreOffice, dan ke **TXT/MD** lewat `pdftotext`
+  (Poppler). Ekspor teks dari hasil impor PDF LibreOffice membuang isi, jadi jalur itu
+  tidak dipakai.
 - **Jalur berantai (maks. 2 langkah).** Bila tidak ada jalur langsung, konversi
   dirutekan lewat perantara — mis. `MD → HTML → PDF`, `CSV → PDF → DOCX`,
   `DOCX → PDF → PPTX`, `DOCX → HTML → MD`. Jalur langsung selalu diutamakan, dan UI
   menandai konversi bertingkat karena hasilnya bisa kurang presisi.
-- Total pasangan yang didukung: **73 dari 132**.
+- Total pasangan yang didukung: **85 dari 132**.
 
-Belum didukung: `PDF → teks/HTML`, pasangan lintas-keluarga tanpa perantara
+Belum didukung: `PDF → HTML/ODT/RTF`, pasangan lintas-keluarga tanpa perantara
 (mis. `DOCX → XLSX`), format Office lama (`.doc`/`.ppt`/`.xls`), serta
 gambar/audio/video/arsip.
 
@@ -108,9 +108,16 @@ gambar/audio/video/arsip.
 Konversi keluarga Office memakai **LibreOffice** yang terpasang di sistem, dideteksi
 otomatis (`MD_CONVERTER_SOFFICE`, lalu lokasi sistem).
 
+Ekstraksi teks PDF memakai **pdftotext** dari Poppler, dideteksi otomatis
+(`MD_CONVERTER_PDFTOTEXT`, lalu PATH, lalu lokasi umum — termasuk `mingw64` bawaan
+Git for Windows dan paket winget `oschwartz10612.Poppler`). Kalau tidak ada, konversi
+`PDF → TXT/MD` otomatis tidak ditawarkan.
+
 - **Dengan LibreOffice**: seluruh keluarga Writer/Calc/Impress + rute PDF (termasuk
   `PDF → DOCX` lewat `writer_pdf_import` dan `PDF → PPTX` lewat `impress_pdf_import`).
-- **Tanpa LibreOffice**: hanya jalur pure-Go yang jalan — `md↔txt`, `md→html`, `xlsx↔csv`.
+- **Dengan pdftotext**: `PDF → TXT` dan `PDF → MD` (teks bersih; struktur heading
+  tidak direkonstruksi karena pdftotext tidak membaca ukuran font).
+- **Tanpa keduanya**: hanya jalur pure-Go yang jalan — `md↔txt`, `md→html`, `xlsx↔csv`.
   Target yang tidak bisa dihasilkan otomatis tidak ditawarkan.
 
 ## Build

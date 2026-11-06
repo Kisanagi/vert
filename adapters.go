@@ -20,6 +20,8 @@ var adaptersMap = map[string]Adapter{
 	"mdToHTML":  mdToHTML,
 	"xlsxToCSV": xlsxToCSV,
 	"csvToXLSX": csvToXLSX,
+
+	"pdftotextToText": pdftotextToText,
 }
 
 var (

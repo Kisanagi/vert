@@ -9,6 +9,26 @@ var pipelines = map[string][]string{
 	"txt->md":   {},
 	"xlsx->csv": {"xlsxToCSV"},
 	"csv->xlsx": {"csvToXLSX"},
+
+	// PDF -> teks memakai pdftotext (Poppler), bukan LibreOffice: hasil impor PDF
+	// di LibreOffice tersimpan di text frame dan ekspornya membuang isi.
+	"pdf->txt": {"pdftotextToText"},
+	"pdf->md":  {"pdftotextToText"},
+}
+
+// adapterChecks menandai adapter yang butuh alat eksternal. Bila alatnya tidak
+// tersedia, pasangan format itu tidak ditawarkan sama sekali.
+var adapterChecks = map[string]func() bool{
+	"pdftotextToText": pdftotextAvailable,
+}
+
+func adaptersReady(steps []string) bool {
+	for _, name := range steps {
+		if check, ok := adapterChecks[name]; ok && !check() {
+			return false
+		}
+	}
+	return true
 }
 
 // enginePreferred: pasangan yang sengaja dialihkan ke LibreOffice walau jalur pure-Go ada.
@@ -82,7 +102,7 @@ func directHop(from, to Format) (Hop, bool) {
 		}
 		return Hop{From: from, To: to, Engine: true}, true
 	}
-	if hasPure {
+	if hasPure && adaptersReady(steps) {
 		return Hop{From: from, To: to, Adapters: steps}, true
 	}
 	return Hop{}, false
