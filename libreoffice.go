@@ -57,15 +57,21 @@ func LibreOfficeAvailable() bool {
 	return ok
 }
 
-// importFilter memilih filter impor; tanpa itu PDF dibuka LibreOffice di Draw.
+// importFilter memilih filter impor yang tepat untuk format sumber.
 func importFilter(from, to Format) string {
-	if from != FormatPDF {
-		return ""
+	switch from {
+	case FormatPDF:
+		// PDF wajib lewat filter eksplisit; tanpa itu dibuka di Draw dan teks pecah.
+		if FamilyOf(to) == FamilyImpress {
+			return "impress_pdf_import"
+		}
+		return "writer_pdf_import"
+	case FormatHTML:
+		// HTML harus dibuka sebagai dokumen Writer, bukan Writer/Web. Tanpa ini
+		// ekspor ke DOCX gagal ("no export filter") dan tabel kurang rapi.
+		return "HTML (StarWriter)"
 	}
-	if FamilyOf(to) == FamilyImpress {
-		return "impress_pdf_import"
-	}
-	return "writer_pdf_import"
+	return ""
 }
 
 // ConvertWithLibreOffice menjalankan soffice headless dengan kontrak

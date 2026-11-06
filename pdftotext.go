@@ -20,8 +20,9 @@ var (
 
 // pdfParagraph adalah satu blok teks hasil ekstraksi PDF.
 type pdfParagraph struct {
-	text  string
-	level int // 0 = teks biasa, 1..3 = heading
+	text   string
+	level  int  // 0 = teks biasa, 1..3 = heading
+	bullet bool // true = butir daftar
 }
 
 // pdftotextCandidates mendata lokasi biner pdftotext.
@@ -135,7 +136,9 @@ func pdfParagraphs(src []byte) ([]pdfParagraph, error) {
 	if supportsBBox(binary) {
 		if out, err := runPdftotext(binary, "-bbox-layout", input, "-"); err == nil {
 			if paragraphs, err := parseBBox(out); err == nil && len(paragraphs) > 0 {
-				return paragraphs, nil
+				if cleaned := dropArtifacts(paragraphs); len(cleaned) > 0 {
+					return cleaned, nil
+				}
 			}
 		}
 	}
@@ -145,10 +148,42 @@ func pdfParagraphs(src []byte) ([]pdfParagraph, error) {
 		return nil, err
 	}
 	paragraphs := splitParagraphs(string(out))
+	paragraphs = dropArtifacts(paragraphs)
 	if len(paragraphs) == 0 {
 		return nil, errors.New("tidak ada teks yang bisa diekstrak (kemungkinan PDF hasil scan)")
 	}
 	return paragraphs, nil
+}
+
+// isArtifactLine menandai baris yang hanya berisi karakter garis tabel, sehingga
+// tidak layak masuk hasil konversi ("+---+", "|---|", "─────").
+func isArtifactLine(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return true
+	}
+	for _, r := range trimmed {
+		switch r {
+		case '+', '-', '=', '|', '_', ' ', '\t', '·', '*',
+			'─', '│', '┌', '┐', '└', '┘', '├', '┤', '┬', '┴', '┼',
+			'━', '┃', '═', '║', '╔', '╗', '╚', '╝':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// dropArtifacts membuang paragraf yang isinya cuma garis tabel.
+func dropArtifacts(paragraphs []pdfParagraph) []pdfParagraph {
+	out := paragraphs[:0]
+	for _, paragraph := range paragraphs {
+		if isArtifactLine(paragraph.text) {
+			continue
+		}
+		out = append(out, paragraph)
+	}
+	return out
 }
 
 // ---------- mode terstruktur (Poppler -bbox-layout) ----------
@@ -173,55 +208,104 @@ type bboxDocument struct {
 	Pages []bboxPage `xml:"body>doc>page"`
 }
 
+// listMarkers adalah penanda butir daftar yang dikenali di awal baris.
+var listMarkers = []string{"•", "◦", "▪", "‣", "·", "-", "*", "–", "—"}
+
+// stripBullet memisahkan penanda butir daftar dari isinya.
+func stripBullet(line string) (string, bool) {
+	for _, marker := range listMarkers {
+		if line == marker {
+			return "", true
+		}
+		if strings.HasPrefix(line, marker+" ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, marker)), true
+		}
+	}
+
+	// Penanda bernomor: "1.", "2)", atau "1.2".
+	if i := strings.IndexByte(line, ' '); i > 0 {
+		head := line[:i]
+		if strings.HasSuffix(head, ".") || strings.HasSuffix(head, ")") {
+			digits := strings.TrimRight(head, ".)")
+			if digits != "" && strings.Trim(digits, "0123456789") == "" {
+				return strings.TrimSpace(line[i+1:]), true
+			}
+		}
+	}
+	return "", false
+}
+
 // parseBBox mengubah XHTML -bbox-layout menjadi paragraf; heading dikenali dari
-// tinggi baris relatif terhadap teks badan.
+// tinggi baris relatif terhadap teks badan, butir daftar dari penandanya.
 func parseBBox(data []byte) ([]pdfParagraph, error) {
 	var doc bboxDocument
 	if err := xml.Unmarshal(data, &doc); err != nil {
 		return nil, err
 	}
 
-	type rawBlock struct {
+	type rawParagraph struct {
 		text   string
 		height float64
+		bullet bool
 	}
 
-	var blocks []rawBlock
+	var raw []rawParagraph
 	for _, page := range doc.Pages {
 		for _, block := range page.Blocks {
-			var builder strings.Builder
 			height := 0.0
 			for _, line := range block.Lines {
 				if h := line.YMax - line.YMin; h > height {
 					height = h
 				}
-				for _, word := range line.Words {
-					text := strings.TrimSpace(word.Text)
-					if text == "" {
-						continue
-					}
-					if builder.Len() > 0 {
-						builder.WriteString(" ")
-					}
-					builder.WriteString(text)
+			}
+
+			var current strings.Builder
+			bullet := false
+			flush := func() {
+				text := strings.TrimSpace(strings.Join(strings.Fields(current.String()), " "))
+				current.Reset()
+				if text != "" {
+					raw = append(raw, rawParagraph{text: text, height: height, bullet: bullet})
 				}
+				bullet = false
 			}
-			text := strings.TrimSpace(builder.String())
-			if text == "" {
-				continue
+
+			for _, line := range block.Lines {
+				words := make([]string, 0, len(line.Words))
+				for _, word := range line.Words {
+					if text := strings.TrimSpace(word.Text); text != "" {
+						words = append(words, text)
+					}
+				}
+				if len(words) == 0 {
+					continue
+				}
+				text := strings.Join(words, " ")
+
+				if rest, ok := stripBullet(text); ok {
+					flush()
+					current.WriteString(rest)
+					bullet = true
+					continue
+				}
+
+				if current.Len() > 0 {
+					current.WriteString(" ")
+				}
+				current.WriteString(text)
 			}
-			blocks = append(blocks, rawBlock{text: text, height: height})
+			flush()
 		}
 	}
-	if len(blocks) == 0 {
+	if len(raw) == 0 {
 		return nil, errors.New("tidak ada blok teks")
 	}
 
 	// Berat per tinggi (dibulatkan) untuk menebak ukuran teks badan.
 	weights := map[int]float64{}
-	for _, block := range blocks {
-		key := int(math.Round(block.height))
-		weights[key] += float64(len(block.text))
+	for _, paragraph := range raw {
+		key := int(math.Round(paragraph.height))
+		weights[key] += float64(len(paragraph.text))
 	}
 	bodyKey, bodyWeight := 0, -1.0
 	for key, weight := range weights {
@@ -234,11 +318,16 @@ func parseBBox(data []byte) ([]pdfParagraph, error) {
 		body = 12
 	}
 
-	paragraphs := make([]pdfParagraph, 0, len(blocks))
-	for _, block := range blocks {
+	paragraphs := make([]pdfParagraph, 0, len(raw))
+	for _, paragraph := range raw {
+		level := 0
+		if !paragraph.bullet {
+			level = bboxHeadingLevel(paragraph.height, body, paragraph.text)
+		}
 		paragraphs = append(paragraphs, pdfParagraph{
-			text:  block.text,
-			level: bboxHeadingLevel(block.height, body, block.text),
+			text:   paragraph.text,
+			level:  level,
+			bullet: paragraph.bullet,
 		})
 	}
 	return paragraphs, nil
@@ -267,21 +356,20 @@ func bboxHeadingLevel(height, body float64, text string) int {
 
 // ---------- fallback (-layout) ----------
 
-// splitParagraphs memecah keluaran -layout menjadi paragraf berdasarkan baris kosong.
+// splitParagraphs memecah keluaran -layout menjadi paragraf: baris kosong memisahkan
+// paragraf, penanda butir memulai butir daftar baru.
 func splitParagraphs(text string) []pdfParagraph {
 	var paragraphs []pdfParagraph
-	var chunk []string
+	var current strings.Builder
+	bullet := false
 
 	flush := func() {
-		if len(chunk) == 0 {
-			return
-		}
-		joined := strings.Join(chunk, " ")
-		chunk = chunk[:0]
-		joined = strings.Join(strings.Fields(joined), " ")
+		joined := strings.Join(strings.Fields(current.String()), " ")
+		current.Reset()
 		if joined != "" {
-			paragraphs = append(paragraphs, pdfParagraph{text: joined})
+			paragraphs = append(paragraphs, pdfParagraph{text: joined, bullet: bullet})
 		}
+		bullet = false
 	}
 
 	for _, line := range strings.Split(text, "\n") {
@@ -290,7 +378,16 @@ func splitParagraphs(text string) []pdfParagraph {
 			flush()
 			continue
 		}
-		chunk = append(chunk, trimmed)
+		if rest, ok := stripBullet(trimmed); ok {
+			flush()
+			current.WriteString(rest)
+			bullet = true
+			continue
+		}
+		if current.Len() > 0 {
+			current.WriteString(" ")
+		}
+		current.WriteString(trimmed)
 	}
 	flush()
 	return paragraphs
@@ -298,22 +395,40 @@ func splitParagraphs(text string) []pdfParagraph {
 
 // ---------- adapter ----------
 
+// renderParagraphs menulis paragraf sebagai Markdown (atau teks polos bila tanpaHeading).
+func renderParagraphs(paragraphs []pdfParagraph, withHeading bool) []byte {
+	var out strings.Builder
+	previousBullet := false
+
+	for _, paragraph := range paragraphs {
+		if paragraph.bullet {
+			out.WriteString("- " + paragraph.text + "\n")
+			previousBullet = true
+			continue
+		}
+		if previousBullet {
+			out.WriteString("\n")
+			previousBullet = false
+		}
+		if withHeading && paragraph.level > 0 {
+			out.WriteString(strings.Repeat("#", paragraph.level) + " " + paragraph.text + "\n\n")
+			continue
+		}
+		out.WriteString(paragraph.text + "\n\n")
+	}
+	if previousBullet {
+		out.WriteString("\n")
+	}
+	return []byte(strings.TrimSpace(out.String()) + "\n")
+}
+
 // pdfToMarkdown mengekstrak PDF lalu merender paragraf sebagai Markdown.
 func pdfToMarkdown(src []byte) ([]byte, error) {
 	paragraphs, err := pdfParagraphs(src)
 	if err != nil {
 		return nil, err
 	}
-
-	var out strings.Builder
-	for _, paragraph := range paragraphs {
-		if paragraph.level > 0 {
-			out.WriteString(strings.Repeat("#", paragraph.level) + " " + paragraph.text + "\n\n")
-			continue
-		}
-		out.WriteString(paragraph.text + "\n\n")
-	}
-	return []byte(strings.TrimSpace(out.String()) + "\n"), nil
+	return renderParagraphs(paragraphs, true), nil
 }
 
 // pdfToText mengekstrak PDF menjadi teks polos (paragraf dipisah baris kosong).
@@ -322,10 +437,5 @@ func pdfToText(src []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	var out strings.Builder
-	for _, paragraph := range paragraphs {
-		out.WriteString(paragraph.text + "\n\n")
-	}
-	return []byte(strings.TrimSpace(out.String()) + "\n"), nil
+	return renderParagraphs(paragraphs, false), nil
 }

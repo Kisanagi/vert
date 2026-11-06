@@ -72,12 +72,14 @@ func main() {
 	listTargets := fs.Bool("formats", false, "tampilkan format tujuan yang didukung")
 	find := fs.String("find", "", "cari berkas (nama mengandung teks) di dalam direktori, lalu cetak hasilnya")
 	preview := fs.Bool("preview", false, "cetak satu tampilan TUI lalu keluar (untuk memeriksa tata letak)")
+	repair := fs.Bool("repair", false, "tulis ulang markdown rusak (tabel runtuh) ke berkas baru")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Pemakaian: vert <berkas...> --to <format> [--out <path>]")
 		fmt.Fprintln(os.Stderr, "           vert                      # buka TUI")
 		fmt.Fprintln(os.Stderr, "           vert <folder>             # buka TUI di folder itu")
 		fmt.Fprintln(os.Stderr, "           vert <berkas> -formats    # lihat target yang didukung")
 		fmt.Fprintln(os.Stderr, "           vert -find <teks> [dir]   # cari berkas yang bisa dikonversi")
+		fmt.Fprintln(os.Stderr, "           vert -repair <berkas.md>  # perbaiki markdown rusak ke <nama>-fixed.md")
 	}
 
 	if err := fs.Parse(normalizeArgs(args)); err != nil {
@@ -86,13 +88,54 @@ func main() {
 
 	inputs := fs.Args()
 
-	if *preview {
-		start := ""
-		if len(inputs) > 0 {
-			start = inputs[0]
+	if *repair {
+		if len(inputs) == 0 {
+			fs.Usage()
+			os.Exit(2)
 		}
-		view := newModel(start)
+		input := inputs[0]
+		data, err := os.ReadFile(input)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "GAGAL %s: %v\n", filepath.Base(input), err)
+			os.Exit(1)
+		}
+		target := *out
+		if target == "" {
+			ext := filepath.Ext(input)
+			target = strings.TrimSuffix(input, ext) + "-fixed" + ext
+		}
+		if err := os.WriteFile(target, []byte(prepareMarkdown(data)), 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "GAGAL menulis %s: %v\n", target, err)
+			os.Exit(1)
+		}
+		fmt.Printf("OK   %s -> %s\n", filepath.Base(input), target)
+		return
+	}
+
+	if *preview {
+		path := ""
+		if len(inputs) > 0 {
+			path = inputs[0]
+		}
+		dir := path
+		if path != "" && !isDir(path) {
+			dir = filepath.Dir(path)
+		}
+
+		view := newModel(dir)
 		view.width, view.height = 100, 24
+
+		// Bila diberi berkas, tampilkan tahap pemilihan format untuk berkas itu.
+		if path != "" && !isDir(path) {
+			if from, ok := DetectFormat(path); ok {
+				view.file, view.from = path, from
+				view.targets = AvailableTargets(from)
+				view.choice = 0
+				view.canRepair = from == FormatMD
+				view.stage = stageFormat
+			}
+		}
+
 		fmt.Println(view.View())
 		return
 	}

@@ -53,6 +53,8 @@ vert *.csv --to xlsx            # borongan
 vert data.csv -formats          # lihat target yang didukung
 vert data.csv --to pdf --out hasil/
 vert -find laporan D:\Dokumen   # cari berkas (rekursif), cetak hasilnya
+vert -repair catatan.md         # perbaiki markdown rusak -> catatan-fixed.md
+vert -preview catatan.md        # cetak satu layar TUI (cek tata letak)
 ```
 
 ### Navigasi TUI
@@ -71,6 +73,11 @@ Folder ditandai `[D]` dan kolom `<DIR>`.
 | `q` / `Ctrl+C` | keluar |
 
 Di mode cari: ketik untuk menyaring, `↑/↓` pilih, `Enter` pakai, `Esc` kembali.
+
+Untuk berkas `.md`, daftar tujuan diawali opsi **Perbaiki markdown** — menulis
+`<nama>-fixed.md` berisi versi yang sudah dirapikan (tabel runtuh dipecah,
+butir `•` jadi daftar, heading bernomor dipulihkan). Perbaikan yang sama juga
+berjalan otomatis saat mengonversi markdown yang terdeteksi rusak.
 
 Pencarian hanya menampilkan berkas yang **bisa dikonversi**, menelusuri sampai 6 level,
 melewati folder berat (`node_modules`, `.git`, `AppData`, `Windows`, dll), dan berhenti

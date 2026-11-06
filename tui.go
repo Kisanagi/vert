@@ -84,10 +84,11 @@ type model struct {
 	width   int
 	height  int
 
-	file    string
-	from    Format
-	targets []Format
-	choice  int
+	file      string
+	from      Format
+	targets   []Format
+	choice    int
+	canRepair bool
 
 	spin    spinner.Model
 	result  string
@@ -236,6 +237,7 @@ func (m *model) open() {
 	m.file, m.from = entry.path, from
 	m.targets = AvailableTargets(from)
 	m.choice = 0
+	m.canRepair = from == FormatMD
 	m.stage = stageFormat
 }
 
@@ -243,6 +245,23 @@ func (m *model) goParent() {
 	if parent := filepath.Dir(m.dir); parent != m.dir {
 		m.setDir(parent)
 	}
+}
+
+// refresh memuat ulang isi folder aktif, mempertahankan posisi kursor bila mungkin.
+func (m *model) refresh() {
+	entries, err := readEntries(m.dir)
+	if err != nil {
+		m.status = "tidak bisa membuka: " + m.dir
+		return
+	}
+	m.entries = entries
+	if m.cursor >= len(m.entries) {
+		m.cursor = len(m.entries) - 1
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+	m.status = ""
 }
 
 // pageSize menentukan berapa baris yang muat di layar.
@@ -376,6 +395,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.file, m.from = path, from
 			m.targets = AvailableTargets(from)
 			m.choice = 0
+			m.canRepair = from == FormatMD
 			m.stage = stageFormat
 		case "backspace":
 			if len(m.searchQuery) > 0 {
@@ -407,15 +427,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.choice--
 			}
 		case "down", "j":
-			if m.choice < len(m.targets)-1 {
+			if m.choice < m.choiceCount()-1 {
 				m.choice++
 			}
 		case "enter":
-			if len(m.targets) == 0 {
+			if m.canRepair && m.choice == 0 {
+				m.repairSelected()
+				return m, nil
+			}
+			target, ok := m.targetAt(m.choice)
+			if !ok {
 				return m, nil
 			}
 			m.stage = stageBusy
-			return m, tea.Batch(m.spin.Tick, m.convertCmd(m.targets[m.choice]))
+			return m, tea.Batch(m.spin.Tick, m.convertCmd(target))
 		}
 		return m, nil
 
@@ -427,8 +452,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case stageDone:
 		if key, ok := msg.(tea.KeyMsg); ok {
 			switch key.String() {
-			case "q", "esc", "enter":
+			case "q":
 				return m, tea.Quit
+			case "enter", "esc":
+				// Kembali ke daftar berkas, bukan keluar aplikasi.
+				m.stage = stageFile
+				m.refresh()
 			}
 		}
 		return m, nil
@@ -562,28 +591,88 @@ func (m model) searchView() string {
 	return b.String()
 }
 
+// choiceCount menghitung jumlah pilihan: format tujuan (+1 bila ada aksi repair).
+func (m model) choiceCount() int {
+	if m.canRepair {
+		return len(m.targets) + 1
+	}
+	return len(m.targets)
+}
+
+// targetAt memetakan indeks pilihan ke format tujuan (indeks 0 = aksi repair).
+func (m model) targetAt(index int) (Format, bool) {
+	if m.canRepair {
+		if index == 0 {
+			return "", false
+		}
+		index--
+	}
+	if index < 0 || index >= len(m.targets) {
+		return "", false
+	}
+	return m.targets[index], true
+}
+
+// repairPath adalah lokasi berkas hasil perbaikan markdown.
+func (m model) repairPath() string {
+	return strings.TrimSuffix(m.file, filepath.Ext(m.file)) + "-fixed.md"
+}
+
+// repairSelected menulis markdown yang sudah diperbaiki di samping berkas asal.
+func (m *model) repairSelected() {
+	data, err := os.ReadFile(m.file)
+	if err != nil {
+		m.result, m.failure = "", err
+		m.stage = stageDone
+		return
+	}
+	target := m.repairPath()
+	if err := os.WriteFile(target, []byte(prepareMarkdown(data)), 0o644); err != nil {
+		m.result, m.failure = "", err
+		m.stage = stageDone
+		return
+	}
+	m.result, m.failure = target, nil
+	m.stage = stageDone
+}
+
 func (m model) formatView() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("Konversi "+filepath.Base(m.file)) + "\n\n")
+
+	index := 0
+	if m.canRepair {
+		line := "Perbaiki markdown -> " + filepath.Base(m.repairPath())
+		if m.choice == index {
+			b.WriteString(cursorStyle.Render("> "+line) + "\n")
+		} else {
+			b.WriteString("  " + line + "\n")
+		}
+		index++
+	}
+
 	if len(m.targets) == 0 {
-		b.WriteString(errStyle.Render("Tidak ada format tujuan yang didukung untuk berkas ini.") + "\n")
+		if !m.canRepair {
+			b.WriteString(errStyle.Render("Tidak ada format tujuan yang didukung untuk berkas ini.") + "\n")
+		}
 	} else {
-		for i, target := range m.targets {
-			if i == m.choice {
+		for _, target := range m.targets {
+			if index == m.choice {
 				b.WriteString(cursorStyle.Render("> "+label(target)) + "\n")
 			} else {
 				b.WriteString("  " + label(target) + "\n")
 			}
+			index++
 		}
 	}
 
-	if len(m.targets) > 0 && m.choice < len(m.targets) {
-		if pipeline, ok := PipelineFor(m.from, m.targets[m.choice]); ok && pipeline.Chained() {
+	if target, ok := m.targetAt(m.choice); ok {
+		if pipeline, ok := PipelineFor(m.from, target); ok && pipeline.Chained() {
 			b.WriteString("\n" + dimStyle.Render("catatan: jalur bertingkat - hasil bisa kurang presisi"))
 		}
 	}
 
-	b.WriteString("\n" + dimStyle.Render("↑/↓ pilih · Enter konversi · Esc kembali · q keluar"))
+	b.WriteString("\n" + dimStyle.Render("↑/↓ pilih · Enter jalankan · Esc kembali · q keluar"))
 	return b.String()
 }
 
@@ -599,9 +688,9 @@ func (m model) View() string {
 		return m.spin.View() + " Mengonversi..."
 	case stageDone:
 		if m.failure != nil {
-			return errStyle.Render("Gagal: "+m.failure.Error()) + "\n\n" + dimStyle.Render("Enter/q keluar")
+			return errStyle.Render("Gagal: "+m.failure.Error()) + "\n\n" + dimStyle.Render("Enter kembali ke daftar · q keluar")
 		}
-		return okStyle.Render("Berhasil: "+m.result) + "\n\n" + dimStyle.Render("Enter/q keluar")
+		return okStyle.Render("Berhasil: "+m.result) + "\n\n" + dimStyle.Render("Enter kembali ke daftar · q keluar")
 	}
 	return ""
 }
