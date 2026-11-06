@@ -71,13 +71,15 @@ func directHop(from, to Format) (Hop, bool) {
 	if from == to {
 		return Hop{}, false
 	}
-	if from == FormatPDF && !allowedFromPDF(to) {
-		return Hop{}, false
-	}
 	key := pairKey(from, to)
 	steps, hasPure := pipelines[key]
 
 	if LibreOfficeAvailable() && (enginePreferred[key] || (!hasPure && engineCanConvert(from, to))) {
+		// Ekspor teks/HTML dari hasil impor PDF membuang isi, jadi tujuan itu tidak
+		// boleh lewat engine. Jalur pure-Go di bawah tetap dipakai bila tersedia.
+		if from == FormatPDF && !allowedFromPDF(to) {
+			return Hop{}, false
+		}
 		return Hop{From: from, To: to, Engine: true}, true
 	}
 	if hasPure {
