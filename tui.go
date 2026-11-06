@@ -576,6 +576,13 @@ func (m model) formatView() string {
 			}
 		}
 	}
+
+	if len(m.targets) > 0 && m.choice < len(m.targets) {
+		if pipeline, ok := PipelineFor(m.from, m.targets[m.choice]); ok && pipeline.Chained() {
+			b.WriteString("\n" + dimStyle.Render("catatan: jalur bertingkat - hasil bisa kurang presisi"))
+		}
+	}
+
 	b.WriteString("\n" + dimStyle.Render("↑/↓ pilih · Enter konversi · Esc kembali · q keluar"))
 	return b.String()
 }

@@ -48,13 +48,20 @@ func mdToText(src []byte) ([]byte, error) {
 	return []byte(strings.Join(lines, "\n") + "\n"), nil
 }
 
-// mdToHTML merender Markdown menjadi fragmen HTML memakai goldmark.
+// mdToHTML merender Markdown menjadi dokumen HTML utuh memakai goldmark.
+// Sengaja dibungkus <html>/<head>/<meta charset> agar LibreOffice mengimpor
+// seluruh isi dengan benar (fragmen saja membuat sebagian konten terlewat).
 func mdToHTML(src []byte) ([]byte, error) {
-	var buf bytes.Buffer
-	if err := goldmark.New().Convert(src, &buf); err != nil {
+	var body bytes.Buffer
+	if err := goldmark.New().Convert(src, &body); err != nil {
 		return nil, err
 	}
-	return buf.Bytes(), nil
+
+	var out bytes.Buffer
+	out.WriteString("<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>Dokumen</title></head><body>\n")
+	out.Write(body.Bytes())
+	out.WriteString("\n</body></html>\n")
+	return out.Bytes(), nil
 }
 
 // xlsxToCSV mengekspor sheet pertama sebuah XLSX ke CSV.

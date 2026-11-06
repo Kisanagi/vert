@@ -90,12 +90,18 @@ Hasil ditulis di folder yang sama dengan ekstensi baru.
 
 - Dalam satu keluarga bebas bolak-balik — mis. `DOCX ↔ ODT`, `XLSX ↔ CSV`, `PPTX ↔ ODP`.
 - Apa pun dari keluarga di atas → **PDF**.
-- **PDF → dokumen** lewat import filter Writer (`writer_pdf_import`);
-  **PDF → presentasi** lewat `impress_pdf_import` (tiap halaman jadi satu slide).
-- **Markdown** (versi ini) hanya ke TXT dan HTML.
+- **PDF → DOCX / PPTX / ODP** saja. LibreOffice menyimpan hasil impor PDF di *text
+  frame*, dan ekspor ke TXT/HTML/ODT/RTF membuang isinya — jadi tujuan itu tidak
+  ditawarkan dari PDF.
+- **Jalur berantai (maks. 2 langkah).** Bila tidak ada jalur langsung, konversi
+  dirutekan lewat perantara — mis. `MD → HTML → PDF`, `CSV → PDF → DOCX`,
+  `DOCX → PDF → PPTX`, `DOCX → HTML → MD`. Jalur langsung selalu diutamakan, dan UI
+  menandai konversi bertingkat karena hasilnya bisa kurang presisi.
+- Total pasangan yang didukung: **73 dari 132**.
 
-Belum didukung: `MD → PDF/DOCX`, `PDF → XLSX/CSV`, pasangan lintas-keluarga
-(mis. `DOCX → XLSX`), format Office lama (`.doc`/`.ppt`/`.xls`), serta gambar/audio/video/arsip.
+Belum didukung: `PDF → teks/HTML`, pasangan lintas-keluarga tanpa perantara
+(mis. `DOCX → XLSX`), format Office lama (`.doc`/`.ppt`/`.xls`), serta
+gambar/audio/video/arsip.
 
 ## Engine
 
