@@ -12,14 +12,15 @@ var pipelines = map[string][]string{
 
 	// PDF -> teks memakai pdftotext (Poppler), bukan LibreOffice: hasil impor PDF
 	// di LibreOffice tersimpan di text frame dan ekspornya membuang isi.
-	"pdf->txt": {"pdftotextToText"},
-	"pdf->md":  {"pdftotextToText"},
+	"pdf->txt": {"pdfToText"},
+	"pdf->md":  {"pdfToMarkdown"},
 }
 
 // adapterChecks menandai adapter yang butuh alat eksternal. Bila alatnya tidak
 // tersedia, pasangan format itu tidak ditawarkan sama sekali.
 var adapterChecks = map[string]func() bool{
-	"pdftotextToText": pdftotextAvailable,
+	"pdfToMarkdown": pdftotextAvailable,
+	"pdfToText":     pdftotextAvailable,
 }
 
 func adaptersReady(steps []string) bool {
