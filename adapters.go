@@ -104,17 +104,18 @@ func stripMarkdownTables(text string) string {
 // mentah ("| --- | --- |") di HTML/PDF hasil konversi.
 var markdownRenderer = goldmark.New(goldmark.WithExtensions(extension.GFM))
 
-// printCSS menentukan tipografi PDF hasil MD->PDF. LibreOffice membaca CSS ini
-// saat mengimpor HTML, sehingga font, ukuran, dan jarak tidak lagi memakai
-// default-nya sendiri (serif, heading tidak konsisten).
+// printCSS menentukan tipografi PDF hasil MD->PDF. Mesin cetak Edge/Chromium
+// membaca CSS ini, dan dukungan CSS-nya jauh lebih lengkap daripada impor HTML
+// mesin Office: ukuran halaman, margin, dan latar tabel benar-benar diterapkan.
 const printCSS = `
   @page { size: A4; margin: 2cm 2.2cm; }
   body {
-    font-family: "Liberation Sans", Arial, Helvetica, sans-serif;
+    font-family: "Segoe UI", Calibri, Arial, sans-serif;
     font-size: 11pt; line-height: 1.5; color: #111827;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
   }
   h1, h2, h3, h4, h5, h6 {
-    font-family: "Liberation Sans", Arial, Helvetica, sans-serif;
+    font-family: "Segoe UI", Calibri, Arial, sans-serif;
     font-weight: bold; line-height: 1.25; margin: 1.1em 0 0.45em;
   }
   h1 { font-size: 20pt; }
@@ -124,12 +125,13 @@ const printCSS = `
   p, ul, ol, blockquote, table, pre { margin: 0 0 0.7em; }
   ul, ol { padding-left: 1.4em; }
   pre {
-    font-family: "Liberation Mono", Consolas, monospace; font-size: 9.5pt;
+    font-family: Consolas, "Cascadia Mono", monospace; font-size: 9.5pt;
     background-color: #f3f4f6; padding: 8pt; border: 1px solid #d1d5db;
+    white-space: pre-wrap;
   }
-  code { font-family: "Liberation Mono", Consolas, monospace; font-size: 9.5pt; }
+  code { font-family: Consolas, "Cascadia Mono", monospace; font-size: 9.5pt; }
   table { border-collapse: collapse; width: 100%; }
-  th, td { border: 1px solid #9ca3af; padding: 4pt 6pt; }
+  th, td { border: 1px solid #9ca3af; padding: 4pt 6pt; overflow-wrap: break-word; }
   th { background-color: #f3f4f6; font-weight: bold; }
   blockquote { padding-left: 10pt; border-left: 3px solid #d1d5db; color: #4b5563; }
   hr { border: none; border-top: 1px solid #e5e7eb; margin: 1em 0; }
@@ -137,8 +139,8 @@ const printCSS = `
 `
 
 // mdToHTML merender Markdown menjadi dokumen HTML utuh memakai goldmark.
-// Sengaja dibungkus <html>/<head>/<meta charset> agar LibreOffice mengimpor
-// seluruh isi dengan benar (fragmen saja membuat sebagian konten terlewat).
+// Sengaja dibungkus <html>/<head>/<meta charset> agar mesin tujuan (Edge atau
+// Office) menerima dokumen lengkap beserta stylesheet-nya, bukan fragmen.
 func mdToHTML(src []byte) ([]byte, error) {
 	normalized := prepareMarkdown(src)
 
@@ -156,8 +158,9 @@ func mdToHTML(src []byte) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// withTableBorders menambahkan atribut border pada <table>. LibreOffice mengabaikan
-// `border` dari CSS pada sel HTML, tetapi menghormati atribut border pada tabel.
+// withTableBorders menambahkan atribut border pada <table>. Word dan Excel kadang
+// mengabaikan `border` dari CSS pada sel HTML, tetapi menghormati atribut border
+// pada tabel.
 func withTableBorders(html string) string {
 	return strings.ReplaceAll(html, "<table>", `<table border="1" cellspacing="0" cellpadding="4">`)
 }

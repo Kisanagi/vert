@@ -2,7 +2,7 @@ package main
 
 import "fmt"
 
-// pipelines: jalur pure-Go per pasangan format (dipakai bila engine tidak perlu/tidak ada).
+// pipelines: jalur pure-Go per pasangan format (dipakai bila mesin tidak perlu/tidak ada).
 var pipelines = map[string][]string{
 	"md->txt":   {"mdToText"},
 	"md->html":  {"mdToHTML"},
@@ -10,8 +10,8 @@ var pipelines = map[string][]string{
 	"xlsx->csv": {"xlsxToCSV"},
 	"csv->xlsx": {"csvToXLSX"},
 
-	// PDF -> teks memakai pdftotext (Poppler), bukan LibreOffice: hasil impor PDF
-	// di LibreOffice tersimpan di text frame dan ekspornya membuang isi.
+	// PDF -> teks memakai pdftotext (Poppler): pembacaan PDF tidak lewat mesin
+	// Office, karena Office tidak mengimpor PDF.
 	"pdf->txt":  {"pdfToText"},
 	"pdf->md":   {"pdfToMarkdown"},
 	"pdf->docx": {"pdfToDocx"},
@@ -34,22 +34,17 @@ func adaptersReady(steps []string) bool {
 	return true
 }
 
-// enginePreferred: pasangan yang sengaja dialihkan ke LibreOffice walau jalur pure-Go ada.
-var enginePreferred = map[string]bool{
-	"docx->pdf": true,
-	"pdf->docx": true,
-}
-
 // maxHops membatasi panjang jalur berantai. Jalur langsung selalu diutamakan; rantai
 // hanya dipakai bila tidak ada jalur langsung. Makin panjang rantai, makin rendah
 // kualitas hasilnya.
 const maxHops = 2
 
-// Hop adalah satu langkah konversi: adapter pure-Go, atau engine LibreOffice.
+// Hop adalah satu langkah konversi: adapter pure-Go, atau mesin eksternal
+// (Edge untuk HTML -> PDF, Microsoft Office untuk keluarga Office).
 type Hop struct {
 	From     Format
 	To       Format
-	Engine   bool     // true = jalankan LibreOffice
+	Engine   bool     // true = jalankan mesin eksternal
 	Adapters []string // dipakai bila Engine == false
 }
 
@@ -63,14 +58,15 @@ func (p Pipeline) Chained() bool { return len(p.Hops) > 1 }
 
 func pairKey(from, to Format) string { return fmt.Sprintf("%s->%s", from, to) }
 
+// engineCanConvert melaporkan apakah pasangan ini wajar diserahkan ke mesin Office.
 func engineCanConvert(from, to Format) bool {
 	a, b := FamilyOf(from), FamilyOf(to)
 	if a == FamilyMarkup || b == FamilyMarkup {
 		return false
 	}
+	// PDF hanya dibaca jalur pure-Go; Office tidak dipakai mengimpor PDF.
 	if a == FamilyPDF {
-		// PDF diimpor ke Writer (dokumen) atau Impress (presentasi); Calc tidak punya impor PDF.
-		return b == FamilyWriter || b == FamilyImpress
+		return false
 	}
 	if b == FamilyPDF {
 		return true
@@ -78,16 +74,13 @@ func engineCanConvert(from, to Format) bool {
 	return a == b
 }
 
-// pdfImportTargets membatasi tujuan konversi dari PDF. LibreOffice menyimpan hasil
-// impor PDF di text frame; ekspor ke TXT/HTML/ODT/RTF membuang isinya (file jadi
-// kosong atau kehilangan paragraf). Hanya format ini yang terbukti menjaga isi.
-var pdfImportTargets = map[Format]bool{
-	FormatDOCX: true,
-	FormatPPTX: true,
-	FormatODP:  true,
+// ConvertWithEngine meneruskan satu langkah ke mesin yang tepat.
+func ConvertWithEngine(from, to Format, data []byte) ([]byte, error) {
+	if from == FormatHTML && to == FormatPDF {
+		return ConvertHTMLToPDF(data)
+	}
+	return ConvertWithOffice(from, to, data)
 }
-
-func allowedFromPDF(to Format) bool { return pdfImportTargets[to] }
 
 // directHop mengembalikan langkah langsung untuk pasangan format, bila ada.
 func directHop(from, to Format) (Hop, bool) {
@@ -97,12 +90,13 @@ func directHop(from, to Format) (Hop, bool) {
 	key := pairKey(from, to)
 	steps, hasPure := pipelines[key]
 
-	if LibreOfficeAvailable() && (enginePreferred[key] || (!hasPure && engineCanConvert(from, to))) {
-		// Ekspor teks/HTML dari hasil impor PDF membuang isi, jadi tujuan itu tidak
-		// boleh lewat engine. Jalur pure-Go di bawah tetap dipakai bila tersedia.
-		if from == FormatPDF && !allowedFromPDF(to) {
-			return Hop{}, false
-		}
+	// HTML -> PDF dikerjakan mesin cetak Edge/Chromium: paling setia pada CSS dan
+	// tidak butuh Office. Ini juga jalur MD -> PDF (MD -> HTML -> PDF).
+	if from == FormatHTML && to == FormatPDF && EdgeAvailable() {
+		return Hop{From: from, To: to, Engine: true}, true
+	}
+
+	if OfficeAvailable(from, to) && !hasPure && engineCanConvert(from, to) {
 		return Hop{From: from, To: to, Engine: true}, true
 	}
 	if hasPure && adaptersReady(steps) {
@@ -180,8 +174,8 @@ func PipelineFor(from, to Format) (Pipeline, bool) {
 		return Pipeline{Hops: []Hop{hop}}, true
 	}
 
-	// PDF tidak memakai rantai: turunan hasil impor PDF (terutama TXT/HTML) kehilangan
-	// isi, jadi rantai dari PDF hanya akan menghasilkan file kosong/rusak.
+	// PDF tidak memakai rantai: hanya jalur pure-Go yang boleh membacanya, jadi
+	// rantai dari PDF hanya akan menghasilkan berkas kosong atau rusak.
 	if from == FormatPDF {
 		return Pipeline{}, false
 	}
@@ -224,7 +218,7 @@ func RunConversion(from, to Format, data []byte) ([]byte, error) {
 	value := data
 	for _, hop := range pipeline.Hops {
 		if hop.Engine {
-			next, err := ConvertWithLibreOffice(hop.From, hop.To, value)
+			next, err := ConvertWithEngine(hop.From, hop.To, value)
 			if err != nil {
 				return nil, fmt.Errorf("%s → %s: %w", hop.From, hop.To, err)
 			}

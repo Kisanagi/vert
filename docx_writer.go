@@ -110,8 +110,8 @@ func paragraphsToDocx(paragraphs []pdfParagraph) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// pdfToDocx mengekstrak PDF lalu menyusun DOCX berisi paragraf dan heading asli
-// (bukan text frame seperti hasil impor PDF LibreOffice).
+// pdfToDocx mengekstrak PDF lalu menyusun DOCX berisi paragraf dan heading asli,
+// bukan kotak teks berkoordinat seperti hasil impor PDF.
 func pdfToDocx(src []byte) ([]byte, error) {
 	paragraphs, err := pdfParagraphs(src)
 	if err != nil {

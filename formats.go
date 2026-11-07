@@ -44,7 +44,8 @@ func DetectFormat(input string) (Format, bool) {
 	return f, ok
 }
 
-// Family mengelompokkan format; menentukan pasangan mana yang wajar ditangani LibreOffice.
+// Family mengelompokkan format; menentukan pasangan mana yang wajar ditangani
+// mesin Office.
 type Family string
 
 const (

@@ -40,8 +40,8 @@ dan menghapus folder itu bila sudah kosong. Buka terminal baru setelahnya.
 > Tutup dulu aplikasi `vert` bila sedang berjalan — Windows mengunci file yang
 > sedang dieksekusi.
 
-Kalau LibreOffice dipasang khusus untuk tool ini, hapus juga lewat
-**Settings → Apps**, atau `winget uninstall TheDocumentFoundation.LibreOffice`.
+Tidak ada yang perlu dibereskan dari sisi mesin: `vert` memakai Microsoft Office
+dan Edge yang sudah ada di sistem (lihat bagian **Engine**).
 
 ## Pakai
 
@@ -84,6 +84,7 @@ melewati folder berat (`node_modules`, `.git`, `AppData`, `Windows`, dll), dan b
 di 300 hasil.
 
 Setelah berkas dipilih, muncul daftar format tujuan → `↑/↓` pilih, `Enter` konversi.
+Setelah selesai, `Enter` kembali ke daftar berkas (aplikasi tidak langsung keluar).
 Hasil ditulis di folder yang sama dengan ekstensi baru.
 
 ## Format
@@ -96,36 +97,39 @@ Hasil ditulis di folder yang sama dengan ekstensi baru.
 | Lain | PDF, Markdown |
 
 - Dalam satu keluarga bebas bolak-balik — mis. `DOCX ↔ ODT`, `XLSX ↔ CSV`, `PPTX ↔ ODP`.
-- Apa pun dari keluarga di atas → **PDF**.
-- **Dari PDF:** ke DOCX/PPTX/ODP lewat LibreOffice, dan ke **TXT/MD** lewat `pdftotext`
-  (Poppler). Ekspor teks dari hasil impor PDF LibreOffice membuang isi, jadi jalur itu
-  tidak dipakai.
+- Apa pun dari keluarga Office → **PDF** (Word/Excel/PowerPoint).
+- `MD`/`HTML → PDF` dicetak oleh **Edge** (dukungan CSS terbaik).
+- **Dari PDF:** ke **DOCX** lewat penulis DOCX bawaan, dan ke **TXT/MD** lewat
+  `pdftotext` (Poppler). `PDF → PPTX/ODP` tidak didukung — PowerPoint tidak mengimpor
+  PDF dengan andal.
 - **Jalur berantai (maks. 2 langkah).** Bila tidak ada jalur langsung, konversi
   dirutekan lewat perantara — mis. `MD → HTML → PDF`, `CSV → PDF → DOCX`,
-  `DOCX → PDF → PPTX`, `DOCX → HTML → MD`. Jalur langsung selalu diutamakan, dan UI
-  menandai konversi bertingkat karena hasilnya bisa kurang presisi.
-- Total pasangan yang didukung: **85 dari 132**.
+  `DOCX → HTML → MD`. Jalur langsung selalu diutamakan, dan UI menandai konversi
+  bertingkat karena hasilnya bisa kurang presisi.
+- Total pasangan yang didukung (Office + Edge + pdftotext terpasang): **67 dari 132**.
 
-Belum didukung: `PDF → HTML/ODT/RTF`, pasangan lintas-keluarga tanpa perantara
+Belum didukung: `PDF → HTML/ODT/RTF/PPTX/ODP`, pasangan lintas-keluarga tanpa perantara
 (mis. `DOCX → XLSX`), format Office lama (`.doc`/`.ppt`/`.xls`), serta
 gambar/audio/video/arsip.
 
 ## Engine
 
-Konversi keluarga Office memakai **LibreOffice** yang terpasang di sistem, dideteksi
-otomatis (`MD_CONVERTER_SOFFICE`, lalu lokasi sistem).
+`vert` tidak mem-bundle mesin apa pun — hanya memakai yang sudah ada di sistem.
 
-Ekstraksi teks PDF memakai **pdftotext** dari Poppler, dideteksi otomatis
-(`MD_CONVERTER_PDFTOTEXT`, lalu PATH, lalu lokasi umum — termasuk `mingw64` bawaan
-Git for Windows dan paket winget `oschwartz10612.Poppler`). Kalau tidak ada, konversi
-`PDF → TXT/MD` otomatis tidak ditawarkan.
+| Mesin | Dipakai untuk | Cara dideteksi |
+| --- | --- | --- |
+| **Microsoft Office** (Word/Excel/PowerPoint) lewat COM | keluarga Office ↔ Office, dan semua → PDF | registry `Word.Application`, `Excel.Application`, `PowerPoint.Application` |
+| **Edge** (cadangan: Chrome) headless | `HTML → PDF`, termasuk jalur `MD → PDF` | `MD_CONVERTER_EDGE`, lalu lokasi Edge/Chrome terpasang |
+| **pdftotext** (Poppler) | `PDF → TXT/MD/DOCX` | `MD_CONVERTER_PDFTOTEXT`, lalu PATH, lalu lokasi umum (termasuk `mingw64` bawaan Git for Windows dan paket winget `oschwartz10612.Poppler`) |
 
-- **Dengan LibreOffice**: seluruh keluarga Writer/Calc/Impress + rute PDF (termasuk
-  `PDF → DOCX` lewat `writer_pdf_import` dan `PDF → PPTX` lewat `impress_pdf_import`).
-- **Dengan pdftotext**: `PDF → TXT` dan `PDF → MD` (teks bersih; struktur heading
-  tidak direkonstruksi karena pdftotext tidak membaca ukuran font).
-- **Tanpa keduanya**: hanya jalur pure-Go yang jalan — `md↔txt`, `md→html`, `xlsx↔csv`.
-  Target yang tidak bisa dihasilkan otomatis tidak ditawarkan.
+- Office dijalankan tak terlihat (`DisplayAlerts` mati, berkas dibuka read-only) dan
+  selalu ditutup lewat `finally`. Berkas masukan ditulis ulang di folder sementara,
+  jadi penanda "berkas dari internet" tidak terbawa dan Protected View tidak aktif.
+- Ekstraksi PDF memakai `pdftotext -bbox-layout`: blok jadi paragraf, dan tinggi baris
+  dipakai menebak tingkat heading.
+- **Tanpa Office**: tersisa `md↔txt`, `md→html`, `xlsx↔csv`, dan `PDF → DOCX/TXT/MD`.
+  Target lain otomatis tidak ditawarkan.
+- **Tanpa Edge**: `MD`/`HTML → PDF` tidak ditawarkan.
 
 ## Build
 
@@ -140,6 +144,6 @@ Menghasilkan binary ~14 MB (tanpa engine). Butuh Go 1.26+.
 - Nama `vert` dipilih karena tidak bentrok dengan perintah bawaan Windows. `convert`
   tidak bisa dipakai: `C:\Windows\System32\convert.exe` (alat konversi drive) sudah
   memakainya, dan di cmd nama itu tidak bisa ditimpa dari sisi user.
-- Binary tidak mem-bundle LibreOffice; ukurannya tetap kecil dan memanfaatkan engine
-  yang sudah ada di sistem.
+- Binary tidak mem-bundle mesin apa pun; ukurannya tetap kecil dan memanfaatkan Office
+  dan Edge yang sudah ada di sistem.
 - `md→txt` memakai penyaring markup sederhana, bukan render penuh.
