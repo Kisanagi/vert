@@ -18,7 +18,7 @@ dipakai bila ada (Microsoft Office lewat COM untuk keluarga Office, Edge headles
 | `pipeline.go` | routing: jalur pure-Go vs mesin eksternal, termasuk rantai maks. 2 langkah |
 | `adapters.go` | adapter pure-Go: `md↔txt`, `md→html`, `xlsx↔csv` |
 | `edge.go` | deteksi Edge/Chrome + pencetakan `HTML → PDF` lewat `--print-to-pdf` |
-| `office.go` | deteksi aplikasi Office + otomasi COM lewat PowerShell |
+| `office.go` | deteksi aplikasi Office + otomasi COM dalam proses (`go-ole`) |
 | `pdftotext.go` | ekstraksi PDF (Poppler `-bbox-layout`) + rekonstruksi paragraf/heading |
 | `docx_writer.go` | penulis DOCX untuk `PDF → DOCX` |
 | `markdown_tables.go` `repair.go` | normalisasi tabel ASCII dan perbaikan markdown rusak |
@@ -41,9 +41,14 @@ dipakai bila ada (Microsoft Office lewat COM untuk keluarga Office, Edge headles
   `pdftotext`, karena Office tidak mengimpor PDF. Karena itu `PDF → PPTX/ODP` tidak ada.
 - Ketersediaan mesin menyembunyikan target, bukan menimbulkan error: tanpa Office,
   tanpa Edge, atau tanpa `pdftotext`, pasangan terkait hanya tidak muncul di UI.
-- Skrip COM memakai nama variabel PowerShell yang berbeda lebih dari sekadar besar-kecil
-  huruf — PowerShell menganggap `$app` dan `$App` sebagai variabel yang sama.
-- Nama variabel PowerShell tidak boleh menyerupai otomatis (`$input`, `$args`, `$host`).
+- Otomasi Office berjalan **di dalam proses** lewat `go-ole`, pada satu thread khusus
+  dengan COM STA aktif (`startCOM`/`comDo`). Objek Office memakai model apartment, jadi
+  inisialisasi dan pemanggilan COM wajib berada di thread yang sama.
+- Deteksi Office memakai `CLSIDFromProgID` (baca registry), **bukan** dengan membuat
+  objeknya — menjalankan Word/Excel/PowerPoint hanya untuk memeriksa terlalu lambat.
+- Versi ini sengaja **tidak** memakai PowerShell: binary tak bertanda tangan yang
+  menjalankan PowerShell tersembunyi dengan `-ExecutionPolicy Bypass` memicu deteksi
+  antivirus (Defender menandainya `Trojan:Win32/Bearfoos.A!ml`, heuristik ML).
 
 ## Common Workflows
 

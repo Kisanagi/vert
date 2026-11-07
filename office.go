@@ -1,17 +1,16 @@
 package main
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
+
+	ole "github.com/go-ole/go-ole"
+	"github.com/go-ole/go-ole/oleutil"
 )
 
 // officeApps memetakan keluarga format ke aplikasi Office yang menanganinya.
@@ -49,8 +48,59 @@ var (
 	officeCache   = map[Family]bool{}
 )
 
-// OfficeAppAvailable melaporkan apakah aplikasi Office untuk keluarga itu terdaftar
-// di sistem. Hasilnya dicache karena deteksinya memanggil PowerShell.
+// comJob adalah satu pekerjaan COM yang dijalankan di thread khusus.
+type comJob struct {
+	run  func() error
+	done chan error
+}
+
+var (
+	comOnce   sync.Once
+	comErr    error
+	comWorker chan comJob
+)
+
+// startCOM menjelaskan satu thread khusus dengan COM (STA) aktif. Seluruh otomasi
+// Office berjalan di thread itu: objek Office memakai model apartment, jadi
+// inisialisasi dan pemanggilannya harus berada di thread yang sama.
+func startCOM() {
+	comWorker = make(chan comJob)
+	ready := make(chan error, 1)
+
+	go func() {
+		runtime.LockOSThread()
+		ready <- ole.CoInitializeEx(0, ole.COINIT_APARTMENTTHREADED)
+		for job := range comWorker {
+			job.done <- job.run()
+		}
+	}()
+
+	comErr = <-ready
+}
+
+// comDo menjalankan f di thread COM tersebut.
+func comDo(f func() error) error {
+	comOnce.Do(startCOM)
+	if comErr != nil {
+		return comErr
+	}
+
+	job := comJob{run: f, done: make(chan error, 1)}
+	comWorker <- job
+
+	select {
+	case err := <-job.done:
+		return err
+	case <-time.After(convertTimeout):
+		// Thread itu tetap sibuk, jadi pekerjaan berikutnya akan ikut menunggu.
+		// Lebih baik memberi error jelas daripada menggantung tanpa batas.
+		return errors.New("konversi Office melebihi batas waktu")
+	}
+}
+
+// OfficeAppAvailable melaporkan apakah aplikasi Office untuk keluarga itu terdaftar.
+// Pemeriksaannya hanya menerjemahkan ProgID ke CLSID (baca registry), jadi
+// aplikasinya tidak dijalankan; hasilnya dicache.
 func OfficeAppAvailable(family Family) bool {
 	progID, ok := officeApps[family]
 	if !ok || runtime.GOOS != "windows" {
@@ -64,10 +114,8 @@ func OfficeAppAvailable(family Family) bool {
 	}
 	officeCacheMu.Unlock()
 
-	script := fmt.Sprintf(`if (Test-Path "Registry::HKEY_CLASSES_ROOT\%s") { exit 0 } else { exit 1 }`, progID)
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
-	hideWindow(cmd)
-	available := cmd.Run() == nil
+	_, lookupErr := ole.ClassIDFrom(progID)
+	available := lookupErr == nil
 
 	officeCacheMu.Lock()
 	officeCache[family] = available
@@ -103,59 +151,13 @@ func officeTarget(from, to Format) (app string, save int, ok bool) {
 	return app, save, ok
 }
 
-// officeScript mengotomasi aplikasi Office lewat COM. try/finally memastikan
-// aplikasi selalu ditutup, dan DisplayAlerts dimatikan agar tidak ada dialog yang
-// menggantung. Jendela editor disembunyikan bila aplikasinya mengizinkan
-// (PowerPoint menolak Visible = $false, jadi hanya berkas tanpa jendela yang dipakai).
-const officeScript = `
-param(
-  [Parameter(Mandatory=$true)][string]$In,
-  [Parameter(Mandatory=$true)][string]$Out,
-  [Parameter(Mandatory=$true)][string]$ProgID,
-  [Parameter(Mandatory=$true)][int]$Save
-)
-$ErrorActionPreference = 'Stop'
-
-# Nama variabel tidak boleh berbeda hanya pada besar-kecil huruf: PowerShell
-# menganggapnya variabel yang sama.
-$app = New-Object -ComObject $ProgID
-try {
-  switch ($ProgID) {
-    'Word.Application' {
-      $app.Visible = $false
-      $app.DisplayAlerts = 0
-      $app.AutomationSecurity = 3
-      $doc = $app.Documents.Open($In, $false, $true, $false)
-      try { $doc.SaveAs2($Out, $Save) } finally { $doc.Close($false) }
-    }
-    'Excel.Application' {
-      $app.Visible = $false
-      $app.DisplayAlerts = $false
-      $book = $app.Workbooks.Open($In, 0, $true)
-      try {
-        if ($Save -eq 0) { $book.ExportAsFixedFormat(0, $Out) }
-        else { $book.SaveAs($Out, $Save) }
-      } finally { $book.Close($false) }
-    }
-    'PowerPoint.Application' {
-      $app.DisplayAlerts = 1
-      $pres = $app.Presentations.Open($In, $true, $false, $false)
-      try { $pres.SaveAs($Out, $Save) } finally { $pres.Close() }
-    }
-    default { throw "aplikasi tidak dikenal: $ProgID" }
-  }
-} finally {
-  $app.Quit()
-}
-`
-
 // ConvertWithOffice menjalankan aplikasi Office lewat COM untuk satu langkah konversi.
 func ConvertWithOffice(from, to Format, data []byte) ([]byte, error) {
 	if runtime.GOOS != "windows" {
 		return nil, errors.New("mesin Microsoft Office hanya tersedia di Windows")
 	}
 
-	app, save, ok := officeTarget(from, to)
+	progID, save, ok := officeTarget(from, to)
 	if !ok {
 		return nil, fmt.Errorf("Office tidak bisa menangani %s → %s", from, to)
 	}
@@ -166,51 +168,16 @@ func ConvertWithOffice(from, to Format, data []byte) ([]byte, error) {
 	}
 	defer os.RemoveAll(dir)
 
+	// Berkas masukan ditulis ulang di sini, jadi penanda "berkas dari internet"
+	// tidak terbawa dan Protected View tidak ikut aktif.
 	input := filepath.Join(dir, "input."+string(from))
 	if err := os.WriteFile(input, data, 0o644); err != nil {
 		return nil, err
 	}
-
-	// Berkas masukan ditulis ulang di sini, jadi penanda "berkas dari internet"
-	// tidak terbawa dan Protected View tidak ikut aktif.
 	output := filepath.Join(dir, "output."+string(to))
-	script := filepath.Join(dir, "convert.ps1")
-	if err := os.WriteFile(script, []byte(officeScript), 0o644); err != nil {
-		return nil, err
-	}
 
-	cmd := exec.Command("powershell.exe",
-		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-		"-File", script,
-		"-In", input,
-		"-Out", output,
-		"-ProgID", app,
-		"-Save", strconv.Itoa(save))
-	hideWindow(cmd)
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			// Hanya proses PowerShell ini yang dibunuh saat gagal; aplikasi Office
-			// milik pengguna tidak boleh diganggu.
-			message := strings.TrimSpace(stderr.String())
-			if message == "" {
-				message = err.Error()
-			}
-			return nil, fmt.Errorf("Office gagal: %s", message)
-		}
-	case <-time.After(convertTimeout):
-		_ = cmd.Process.Kill()
-		return nil, errors.New("konversi Office melebihi batas waktu")
+	if err := comDo(func() error { return runOffice(progID, input, output, save) }); err != nil {
+		return nil, fmt.Errorf("Office gagal: %w", err)
 	}
 
 	content, err := os.ReadFile(output)
@@ -218,4 +185,164 @@ func ConvertWithOffice(from, to Format, data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("Office tidak menghasilkan berkas %s", to)
 	}
 	return content, nil
+}
+
+// runOffice membuka berkas, menyimpannya dalam format tujuan, lalu menutup aplikasi.
+func runOffice(progID, input, output string, save int) (err error) {
+	unknown, err := oleutil.CreateObject(progID)
+	if err != nil {
+		return fmt.Errorf("tidak bisa menjalankan %s: %w", progID, err)
+	}
+	app, err := unknown.QueryInterface(ole.IID_IDispatch)
+	unknown.Release()
+	if err != nil {
+		return err
+	}
+	defer app.Release()
+
+	// Aplikasi harus selalu ditutup, termasuk saat konversi gagal.
+	defer func() {
+		if _, quitErr := oleutil.CallMethod(app, "Quit"); quitErr != nil && err == nil {
+			err = quitErr
+		}
+	}()
+
+	switch progID {
+	case "Word.Application":
+		return convertWord(app, input, output, save)
+	case "Excel.Application":
+		return convertExcel(app, input, output, save)
+	case "PowerPoint.Application":
+		return convertPowerPoint(app, input, output, save)
+	}
+	return fmt.Errorf("aplikasi tidak dikenal: %s", progID)
+}
+
+func convertWord(app *ole.IDispatch, input, output string, save int) error {
+	if err := putProperty(app, "Visible", false); err != nil {
+		return err
+	}
+	if err := putProperty(app, "DisplayAlerts", 0); err != nil {
+		return err
+	}
+	if err := putProperty(app, "AutomationSecurity", 3); err != nil {
+		return err
+	}
+
+	documents, err := oleutil.GetProperty(app, "Documents")
+	if err != nil {
+		return err
+	}
+	defer documents.Clear()
+	docs, err := dispatchOf(documents)
+	if err != nil {
+		return err
+	}
+
+	// Open(FileName, ConfirmConversions, ReadOnly, AddToRecentFiles)
+	opened, err := oleutil.CallMethod(docs, "Open", input, false, true, false)
+	if err != nil {
+		return err
+	}
+	defer opened.Clear()
+
+	doc, err := dispatchOf(opened)
+	if err != nil {
+		return err
+	}
+	if _, err := oleutil.CallMethod(doc, "SaveAs2", output, save); err != nil {
+		return err
+	}
+	_, err = oleutil.CallMethod(doc, "Close", false)
+	return err
+}
+
+func convertExcel(app *ole.IDispatch, input, output string, save int) error {
+	if err := putProperty(app, "Visible", false); err != nil {
+		return err
+	}
+	if err := putProperty(app, "DisplayAlerts", false); err != nil {
+		return err
+	}
+
+	workbooks, err := oleutil.GetProperty(app, "Workbooks")
+	if err != nil {
+		return err
+	}
+	defer workbooks.Clear()
+	books, err := dispatchOf(workbooks)
+	if err != nil {
+		return err
+	}
+
+	// Open(FileName, UpdateLinks, ReadOnly)
+	opened, err := oleutil.CallMethod(books, "Open", input, 0, true)
+	if err != nil {
+		return err
+	}
+	defer opened.Clear()
+
+	book, err := dispatchOf(opened)
+	if err != nil {
+		return err
+	}
+
+	// Excel menyimpan PDF lewat ExportAsFixedFormat, bukan SaveAs.
+	if save == 0 {
+		if _, err := oleutil.CallMethod(book, "ExportAsFixedFormat", 0, output); err != nil {
+			return err
+		}
+	} else if _, err := oleutil.CallMethod(book, "SaveAs", output, save); err != nil {
+		return err
+	}
+	_, err = oleutil.CallMethod(book, "Close", false)
+	return err
+}
+
+func convertPowerPoint(app *ole.IDispatch, input, output string, save int) error {
+	// PowerPoint menolak Visible = false, jadi jendelanya disembunyikan lewat
+	// argumen WithWindow = false saat membuka presentasi.
+	if err := putProperty(app, "DisplayAlerts", 1); err != nil {
+		return err
+	}
+
+	presentations, err := oleutil.GetProperty(app, "Presentations")
+	if err != nil {
+		return err
+	}
+	defer presentations.Clear()
+	pres, err := dispatchOf(presentations)
+	if err != nil {
+		return err
+	}
+
+	// Open(FileName, ReadOnly, Untitled, WithWindow)
+	opened, err := oleutil.CallMethod(pres, "Open", input, true, false, false)
+	if err != nil {
+		return err
+	}
+	defer opened.Clear()
+
+	deck, err := dispatchOf(opened)
+	if err != nil {
+		return err
+	}
+	if _, err := oleutil.CallMethod(deck, "SaveAs", output, save); err != nil {
+		return err
+	}
+	_, err = oleutil.CallMethod(deck, "Close")
+	return err
+}
+
+func putProperty(disp *ole.IDispatch, name string, value interface{}) error {
+	_, err := oleutil.PutProperty(disp, name, value)
+	return err
+}
+
+func dispatchOf(value *ole.VARIANT) (*ole.IDispatch, error) {
+	dispatch := value.ToIDispatch()
+	if dispatch == nil {
+		return nil, errors.New("aplikasi Office tidak mengembalikan objek")
+	}
+	return dispatch, nil
 }

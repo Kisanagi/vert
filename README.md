@@ -118,13 +118,14 @@ gambar/audio/video/arsip.
 
 | Mesin | Dipakai untuk | Cara dideteksi |
 | --- | --- | --- |
-| **Microsoft Office** (Word/Excel/PowerPoint) lewat COM | keluarga Office ↔ Office, dan semua → PDF | registry `Word.Application`, `Excel.Application`, `PowerPoint.Application` |
+| **Microsoft Office** (Word/Excel/PowerPoint) lewat COM | keluarga Office ↔ Office, dan semua → PDF | ProgID diterjemahkan ke CLSID (baca registry), tanpa menjalankan aplikasinya |
 | **Edge** (cadangan: Chrome) headless | `HTML → PDF`, termasuk jalur `MD → PDF` | `MD_CONVERTER_EDGE`, lalu lokasi Edge/Chrome terpasang |
 | **pdftotext** (Poppler) | `PDF → TXT/MD/DOCX` | `MD_CONVERTER_PDFTOTEXT`, lalu PATH, lalu lokasi umum (termasuk `mingw64` bawaan Git for Windows dan paket winget `oschwartz10612.Poppler`) |
 
-- Office dijalankan tak terlihat (`DisplayAlerts` mati, berkas dibuka read-only) dan
-  selalu ditutup lewat `finally`. Berkas masukan ditulis ulang di folder sementara,
-  jadi penanda "berkas dari internet" tidak terbawa dan Protected View tidak aktif.
+- Otomasi Office berjalan **di dalam proses** (tanpa proses PowerShell terpisah), tak
+  terlihat, dengan `DisplayAlerts` mati dan berkas dibuka read-only; aplikasinya selalu
+  ditutup setelah selesai. Berkas masukan ditulis ulang di folder sementara, jadi
+  penanda "berkas dari internet" tidak terbawa dan Protected View tidak aktif.
 - Ekstraksi PDF memakai `pdftotext -bbox-layout`: blok jadi paragraf, dan tinggi baris
   dipakai menebak tingkat heading.
 - **Tanpa Office**: tersisa `md↔txt`, `md→html`, `xlsx↔csv`, dan `PDF → DOCX/TXT/MD`.

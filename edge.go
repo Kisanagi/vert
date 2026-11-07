@@ -134,7 +134,6 @@ func runEdgePrint(binary, mode, dir, input, output string) ([]byte, error) {
 	}
 
 	cmd := exec.Command(binary, args...)
-	hideWindow(cmd)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
